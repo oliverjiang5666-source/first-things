@@ -88,6 +88,17 @@ function quadChip(task) {
   return `<span class="chip quad q${q}">${QUAD_LABEL[q]}</span>`;
 }
 
+// v2 设计系统：字形符号统一为内联线性 SVG（stroke 1.8–2，尺寸见设计交付 §3）；
+// ✦ 是 AI 的唯一记号，出现在非 accent 底色上时用 AI_MARK 着 accent 绿。
+const SVG_STAR = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
+const SVG_STAR_SM = '<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" style="vertical-align:-1px"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
+const SVG_PLAY = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
+const SVG_STOP = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>';
+const SVG_REFRESH = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>';
+const WARN_ICON = '<span style="color:var(--q3);flex-shrink:0;display:inline-flex;margin-top:3px"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>';
+const SPARK = '<span class="spark">✦</span>';
+const AI_MARK = '<span style="color:var(--accent)">✦</span>';
+
 function taskRow(t, dayKey) {
   const running = state.timer?.taskId === t.id;
   const timeBits = [];
@@ -95,8 +106,8 @@ function taskRow(t, dayKey) {
   if (running) timeBits.push(`⏱ 已 ${timerElapsedMin()} 分`);
   else timeBits.push(t.actMin != null ? `实际 ${t.actMin} 分` : `${taskMinutes(t)}分`);
   const timerBtn = t.done ? '' : (running
-    ? `<button class="timer-btn on" data-action="timer-stop" title="停止计时并记入实际用时">⏹</button>`
-    : `<button class="timer-btn" data-action="timer-start" data-day="${dayKey}" data-id="${t.id}" title="开始计时">▶</button>`);
+    ? `<button class="timer-btn on" data-action="timer-stop" title="停止计时并记入实际用时">${SVG_STOP}</button>`
+    : `<button class="timer-btn" data-action="timer-start" data-day="${dayKey}" data-id="${t.id}" title="开始计时">${SVG_PLAY}</button>`);
   return `<div class="task ${t.done ? 'done' : ''} ${running ? 'timing' : ''}">
     <button class="check" data-action="toggle-task" data-day="${dayKey}" data-id="${t.id}" title="完成">
       <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
@@ -106,7 +117,7 @@ function taskRow(t, dayKey) {
       <div class="task-meta">${goalChip(t)}${quadChip(t)}<span class="chip">${timeBits.join(' · ')}</span></div>
     </div>
     ${timerBtn}
-    <button class="mit-star ${t.mit ? 'on' : ''}" data-action="toggle-mit" data-day="${dayKey}" data-id="${t.id}" title="今日要事（最多 3 件）">★</button>
+    <button class="mit-star ${t.mit ? 'on' : ''}" data-action="toggle-mit" data-day="${dayKey}" data-id="${t.id}" title="今日要事（最多 3 件）">${SVG_STAR}</button>
   </div>`;
 }
 
@@ -115,7 +126,7 @@ function signalChips(levelFilter = null, max = 2) {
   if (levelFilter) sigs = sigs.filter((s) => s.level === levelFilter);
   sigs = sigs.slice(0, max);
   if (!sigs.length) return '';
-  return sigs.map((s) => `<div class="banner ${s.level === 'warn' ? '' : 'calm'}"><span>${s.level === 'warn' ? '⚠' : '·'}</span><span>${esc(s.text)}</span></div>`).join('');
+  return sigs.map((s) => `<div class="banner ${s.level === 'warn' ? '' : 'calm'}">${s.level === 'warn' ? WARN_ICON : '<span>·</span>'}<span>${esc(s.text)}</span></div>`).join('');
 }
 
 function aiGate(purpose, hint) {
@@ -172,7 +183,7 @@ function renderToday() {
     html += `<div class="card nl-card">
       <div class="nl-bar">
         <span class="nl-icon">✦</span>
-        <input type="text" placeholder="跟教练说：安排、调整、完成了什么、今晚复盘…直接发" data-enter="coach-bar">
+        <input type="text" placeholder="一句话交给教练：完成了跑步用40分 / 下午3点加牙医 / 今晚复盘…" data-enter="coach-bar">
         <button class="btn primary small" data-action="coach-bar">发送</button>
       </div>
     </div>`;
@@ -194,7 +205,7 @@ function renderToday() {
     html += `<div class="card"><div class="card-title">开始今天</div>
       <div class="small" style="color:var(--ink-2)">用 1 分钟把今天安排好：先定最多 3 件要事，落到时间块。</div>
       <div class="btn-row mt12">
-        <button class="btn primary" data-action="plan-open">☀ 计划今天</button>
+        <button class="btn primary" data-action="plan-open">✦ 计划今天</button>
         <button class="btn" data-action="focus-quick-add">直接添加任务</button>
       </div></div>`;
   }
@@ -223,7 +234,7 @@ function renderToday() {
   const sortTasks = (arr) => [...arr].sort((a, b) => (a.done - b.done));
   html += `<div class="card">`;
   if (mits.length) {
-    html += `<div class="section-label"><span class="star">★</span> 今日要事</div><div class="task-list">${sortTasks(mits).map((t) => taskRow(t, tk)).join('')}</div>`;
+    html += `<div class="section-label"><span class="star">${SVG_STAR_SM}</span> 今日要事</div><div class="task-list">${sortTasks(mits).map((t) => taskRow(t, tk)).join('')}</div>`;
   }
   if (others.length) {
     html += `<div class="section-label">其他任务</div><div class="task-list">${sortTasks(others).map((t) => taskRow(t, tk)).join('')}</div>`;
@@ -232,7 +243,7 @@ function renderToday() {
     html += `<div class="empty"><div class="empty-title">今天还没有任务</div>点右下输入框直接添加，或用「计划今天」</div>`;
   }
   html += `<div class="quick-add"><input type="text" placeholder="添加任务，回车确认" data-enter="qa-add">
-    <button class="btn small" data-action="plan-open" title="让 AI 结合目标与作息安排今天">☀ AI 安排</button></div></div>`;
+    <button class="btn small" data-action="plan-open" title="让 AI 结合目标与作息安排今天">${AI_MARK} AI 安排</button></div></div>`;
 
   // 晚间复盘
   html += reviewDayCard(tk);
@@ -277,7 +288,7 @@ function briefCard() {
   const when = mins < 1 ? '刚刚' : mins < 60 ? `${mins} 分钟前` : `${Math.floor(mins / 60)} 小时前`;
   return `<div class="card brief-card">
     <div class="ai-tag">✦ 教练观察<span class="muted" style="font-weight:400;margin-left:6px">${when}</span>
-      <button class="title-action brief-refresh" data-action="brief-refresh" title="立即重新观察" ${briefLoading ? 'disabled' : ''}>${briefLoading ? '<span class="spinner"></span>' : '↻'}</button></div>
+      <button class="title-action brief-refresh" data-action="brief-refresh" title="立即重新观察" ${briefLoading ? 'disabled' : ''}>${briefLoading ? '<span class="spinner"></span>' : SVG_REFRESH}</button></div>
     <div class="brief-headline">${esc(b.headline)}</div>
     ${b.suggestion ? `<div class="brief-sub">${esc(b.suggestion)}</div>` : ''}
   </div>`;
@@ -306,7 +317,7 @@ function reviewDayCard(tk) {
     <div class="btn-row">
       <button class="btn primary" data-action="review-day-done">完成复盘</button>
       ${hasKey()
-        ? `<button class="btn" data-action="review-day-ai" ${reviewAIState.loading ? 'disabled' : ''}>${reviewAIState.loading ? '<span class="spinner"></span> 思考中…' : '✦ 教练点评'}</button>`
+        ? `<button class="btn" data-action="review-day-ai" ${reviewAIState.loading ? 'disabled' : ''}>${reviewAIState.loading ? '<span class="spinner"></span> 思考中…' : `${AI_MARK} 教练点评`}</button>`
         : `<button class="btn ghost small" data-action="copy-prompt" data-purpose="review-day">复制复盘上下文给 AI</button>`}
     </div>
   </div>`;
@@ -413,7 +424,7 @@ function renderGoals() {
   let html = `<div class="page-head"><h1>目标</h1><button class="btn primary small" data-action="goal-new">＋ 新目标</button></div>`;
 
   if (active.length > 5) {
-    html += `<div class="banner"><span>⚠</span><span>目标太多等于没有目标——考虑暂停一些，聚焦最重要的 3-5 个。</span></div>`;
+    html += `<div class="banner">${WARN_ICON}<span>目标太多等于没有目标——考虑暂停一些，聚焦最重要的 3-5 个。</span></div>`;
   }
   if (!active.length && !rest.length) {
     html += `<div class="card"><div class="empty"><div class="empty-title">还没有目标</div>目标定义了什么是「重要」。<br>从一个真正想实现的伟大目标开始，AI 可以帮你分解。</div>
@@ -474,7 +485,7 @@ function renderReview() {
   const sigs = computeSignals();
   if (sigs.length) {
     html += `<div class="card"><div class="card-title">系统观察</div>${sigs.map((s) =>
-      `<div class="signal ${s.level}"><span>${s.level === 'warn' ? '⚠' : '·'}</span><span>${esc(s.text)}</span></div>`).join('')}</div>`;
+      `<div class="signal ${s.level}">${s.level === 'warn' ? WARN_ICON : '<span>·</span>'}<span>${esc(s.text)}</span></div>`).join('')}</div>`;
   }
 
   // 核心指标
@@ -556,7 +567,7 @@ function insightCard() {
   } else {
     body += `<div class="small" style="color:var(--ink-2)">让 AI 基于你的全部数据做一次第一性原理分析：行为模式 → 最大瓶颈 → 杠杆点 → 下周实验。建议每周做一次。</div>`;
   }
-  return `<div class="card"><div class="card-title">✦ 深度洞察</div>${body}
+  return `<div class="card"><div class="card-title"><span>${AI_MARK} 深度洞察</span></div>${body}
     ${insightState.error ? `<div class="ai-error">${esc(insightState.error)}</div>` : ''}
     <div class="btn-row mt12">
       ${hasKey()
@@ -585,7 +596,7 @@ function monthCard() {
     <div class="field"><textarea data-change="month-sum" data-mk="${mk}" placeholder="这个月最重要的进展、反复出现的问题、值得延续的做法（100 字以内）">${esc(cur)}</textarea></div>
     ${monthAIState.error ? `<div class="ai-error">${esc(monthAIState.error)}</div>` : ''}
     <div class="btn-row">
-      ${hasKey() && weekSums.length ? `<button class="btn small" data-action="month-ai" data-mk="${mk}" ${monthAIState.loading ? 'disabled' : ''}>${monthAIState.loading ? '<span class="spinner"></span> 生成中…' : '✦ AI 草拟'}</button>` : ''}
+      ${hasKey() && weekSums.length ? `<button class="btn small" data-action="month-ai" data-mk="${mk}" ${monthAIState.loading ? 'disabled' : ''}>${monthAIState.loading ? '<span class="spinner"></span> 生成中…' : `${AI_MARK} AI 草拟`}</button>` : ''}
     </div>
     ${past.length ? past.map((k) => `<div class="review-item"><div class="rw"><span>${fmtMonth(k)}</span></div><div class="rtext">${esc(state.months[k].review.summary)}</div></div>`).join('') : ''}
   </div>`;
@@ -660,7 +671,7 @@ function settingsModal() {
     <button class="btn small" data-action="demo-load">加载示例数据</button>
     <button class="btn small danger" data-action="wipe-data">清空所有数据</button>
   </div>
-  <div class="muted small mt12">要事 First Things v1.3 · 数据存储在本机浏览器 · 「今天」按北京时间（UTC+8）判定 · <a href="https://github.com/oliverjiang5666-source/first-things" target="_blank" rel="noreferrer">GitHub</a></div>
+  <div class="muted small mt12">要事 First Things v1.4 · 数据存储在本机浏览器 · 「今天」按北京时间（UTC+8）判定 · <a href="https://github.com/oliverjiang5666-source/first-things" target="_blank" rel="noreferrer">GitHub</a></div>
   <div class="modal-actions"><button class="btn" data-action="modal-close">完成</button></div>`;
 }
 
@@ -704,7 +715,7 @@ function coachMsgHTML(m) {
 
 function coachModal() {
   const msgs = coachLog.map(coachMsgHTML).join('');
-  const pending = coachBusy ? '<div class="msg assistant pending"><span class="spinner"></span> 正在理解并处理…</div>' : '';
+  const pending = coachBusy ? `<div class="msg assistant pending">${SPARK} 正在理解并处理…</div>` : '';
   const emptyHint = `<div class="empty">安排、调整、记录、复盘，都直接说——<br>
     「明天上午 10 点安排 90 分钟写论文」<br>
     「跑步完成了，用时 40 分钟」<br>
@@ -791,7 +802,7 @@ function planModal() {
   if (p) {
     const item = (t, idx, group) => `<div class="ai-item">
       <input type="checkbox" data-change="plan-check" data-key="${group}-${idx}" ${planState.checked[`${group}-${idx}`] !== false ? 'checked' : ''}>
-      <div><div class="ai-item-title">${group === 'mits' ? '★ ' : ''}${esc(t.title)}</div>
+      <div><div class="ai-item-title">${group === 'mits' ? `${SVG_STAR_SM} ` : ''}${esc(t.title)}</div>
       <div class="ai-item-meta">${[t.goalId && goalById(t.goalId) ? goalById(t.goalId).title : null, t.blockStart ? t.blockStart + ' 开始' : null, t.estMin + '分'].filter(Boolean).join(' · ')}</div></div>
     </div>`;
     body = `<div class="ai-card">
@@ -805,12 +816,11 @@ function planModal() {
       <textarea data-change="plan-feedback" placeholder="例：10:00-11:30 有例会；跑步挪到晚上；再加一件「给妈妈打电话」；写作只留 60 分钟" style="min-height:56px">${esc(planState.feedback)}</textarea></div>
     <div class="btn-row">
       <button class="btn primary" data-action="plan-adopt" ${loading ? 'disabled' : ''}>采纳所选</button>
-      <button class="btn" data-action="plan-adjust" ${loading ? 'disabled' : ''}>${loading ? '<span class="spinner"></span> 调整中…' : '✦ 按我的话调整'}</button>
+      <button class="btn" data-action="plan-adjust" ${loading ? 'disabled' : ''}>${loading ? '<span class="spinner"></span> 调整中…' : `${AI_MARK} 按我的话调整`}</button>
       <button class="btn ghost small" data-action="plan-ai" ${loading ? 'disabled' : ''}>重新生成</button>
     </div>`;
   } else if (loading) {
-    body = `<div class="ai-card"><div class="ai-tag">✦ 正在分解</div>
-      <div class="small" style="color:var(--ink-2)"><span class="spinner"></span> 正在从你的目标、本周要事、昨日未完成与作息，分解出今天的草案…（深度思考约需十几秒）</div></div>`;
+    body = `<div class="ai-card"><div class="ai-loading">${SPARK} 正在从你的目标、本周要事、昨日未完成与作息分解今天的草案…通常几十秒；若网络连不上 openrouter.ai，最多 150 秒会明确报错</div></div>`;
   } else if (hasKey()) {
     body = `<div class="field"><label>可以先说点什么（也可以留空，AI 直接从目标分解）</label>
       <textarea data-change="plan-feedback" placeholder="固定日程（几点开会）、今天的状态、特别想做的事…" style="min-height:72px">${esc(planState.feedback)}</textarea></div>
@@ -848,7 +858,7 @@ function taskModal() {
   <div class="field"><label>属性</label>
     <div class="btn-row">
       <button class="chip urgent-toggle ${t.urgent ? 'on' : ''}" data-action="task-urgent">⚡ 紧急</button>
-      <button class="chip ${t.mit ? 'q2' : ''}" data-action="task-mit">★ 今日要事</button>
+      <button class="chip ${t.mit ? 'q2' : ''}" data-action="task-mit">${SVG_STAR_SM} 今日要事</button>
       <span class="chip quad q${quadrantOf(t)}">${QUAD_LABEL[quadrantOf(t)]}</span>
     </div></div>
   <div style="display:flex;gap:12px">
@@ -898,7 +908,7 @@ function goalModal() {
   </div>` : ''}
 
   <div class="btn-row">
-    ${hasKey() ? `<button class="btn" data-action="gf-ai" ${d.ai.loading ? 'disabled' : ''}>${d.ai.loading ? '<span class="spinner"></span> 第一性原理分解中…' : '✦ AI 帮我分解这个目标'}</button>` : `<button class="btn small ghost" data-action="copy-prompt" data-purpose="decompose">复制分解指令给 AI</button>`}
+    ${hasKey() ? `<button class="btn" data-action="gf-ai" ${d.ai.loading ? 'disabled' : ''}>${d.ai.loading ? '<span class="spinner"></span> 第一性原理分解中…' : `${AI_MARK} AI 帮我分解这个目标`}</button>` : `<button class="btn small ghost" data-action="copy-prompt" data-purpose="decompose">复制分解指令给 AI</button>`}
   </div>
 
   ${!isNew ? `<div class="field mt12"><label>状态</label><div class="seg">
@@ -945,7 +955,7 @@ function wizardModal() {
       <textarea data-change="wiz-summary" placeholder="主要完成了什么？没完成的原因？下周最该注意什么？">${esc(w.summary)}</textarea></div>
     ${w.sumError ? `<div class="ai-error">${esc(w.sumError)}</div>` : ''}
     <div class="btn-row">
-      ${hasKey() ? `<button class="btn small" data-action="wiz-ai-summary" ${w.sumLoading ? 'disabled' : ''}>${w.sumLoading ? '<span class="spinner"></span> 草拟中…' : '✦ AI 草拟'}</button>` : ''}
+      ${hasKey() ? `<button class="btn small" data-action="wiz-ai-summary" ${w.sumLoading ? 'disabled' : ''}>${w.sumLoading ? '<span class="spinner"></span> 草拟中…' : `${AI_MARK} AI 草拟`}</button>` : ''}
     </div>
     <div class="modal-actions">
       <button class="btn ghost" data-action="modal-close">取消</button>
@@ -973,12 +983,12 @@ function wizardModal() {
       ${w.rationale && sugs ? `<div class="ai-rationale" style="margin-bottom:6px">${esc(w.rationale)}</div>` : ''}
       <div>${sugs || (w.sugLoading ? '' : '<span class="muted small">点下方按钮获取建议</span>')}</div>
       <div class="btn-row mt8">
-        ${hasKey() ? `<button class="btn small" data-action="wiz-ai-suggest" ${w.sugLoading ? 'disabled' : ''}>${w.sugLoading ? '<span class="spinner"></span> 思考中…' : sugs ? '↻ 重新生成' : '✦ AI 建议本周要事'}</button>` : `<button class="btn small ghost" data-action="copy-prompt" data-purpose="plan-week">复制上下文给 AI</button>`}
+        ${hasKey() ? `<button class="btn small" data-action="wiz-ai-suggest" ${w.sugLoading ? 'disabled' : ''}>${w.sugLoading ? '<span class="spinner"></span> 思考中…' : sugs ? `${SVG_REFRESH} 重新生成` : `${AI_MARK} AI 建议本周要事`}</button>` : `<button class="btn small ghost" data-action="copy-prompt" data-purpose="plan-week">复制上下文给 AI</button>`}
         <button class="btn small ghost" data-action="wiz-local-suggest">用上周未完成 + 收集箱</button>
       </div>
       ${hasKey() && sugs ? `<div class="field mt8" style="margin-bottom:0"><label>对建议不满意？直接说</label>
         <textarea data-change="wiz-feedback" placeholder="例：MVP 那条太大，拆小一点；再加一条恢复跑步；健康类只留一条" style="min-height:44px">${esc(w.feedback || '')}</textarea>
-        <div class="btn-row mt8"><button class="btn small" data-action="wiz-ai-adjust" ${w.sugLoading ? 'disabled' : ''}>${w.sugLoading ? '<span class="spinner"></span> 调整中…' : '✦ 按我的话调整'}</button></div></div>` : ''}
+        <div class="btn-row mt8"><button class="btn small" data-action="wiz-ai-adjust" ${w.sugLoading ? 'disabled' : ''}>${w.sugLoading ? '<span class="spinner"></span> 调整中…' : `${AI_MARK} 按我的话调整`}</button></div></div>` : ''}
     </div>
     <div class="modal-actions">
       <button class="btn ghost left" data-action="wiz-back">上一步</button>
@@ -1011,7 +1021,7 @@ function weekReviewModal() {
   <div class="field"><textarea data-change="wr-text" style="min-height:100px" placeholder="主要完成了什么？没完成的原因？下周最该注意什么？">${esc(wr.text)}</textarea></div>
   ${wr.error ? `<div class="ai-error">${esc(wr.error)}</div>` : ''}
   <div class="btn-row">
-    ${hasKey() ? `<button class="btn small" data-action="wr-ai" ${wr.loading ? 'disabled' : ''}>${wr.loading ? '<span class="spinner"></span> 草拟中…' : '✦ AI 草拟'}</button>` : ''}
+    ${hasKey() ? `<button class="btn small" data-action="wr-ai" ${wr.loading ? 'disabled' : ''}>${wr.loading ? '<span class="spinner"></span> 草拟中…' : `${AI_MARK} AI 草拟`}</button>` : ''}
   </div>
   <div class="modal-actions">
     <button class="btn ghost" data-action="modal-close">取消</button>
@@ -1222,9 +1232,9 @@ export const Actions = {
   // --- plan day ---
   'plan-open': () => {
     planState = { feedback: '', loading: false, error: null, proposal: null, checked: {} };
+    // 打开先给输入框：想法可以先说（也可以留空），点「生成」才开始——
+    // 不再自动起跑，用户对时机有掌控，也不会一打开就压上一次 AI 调用
     openModal(planModal, () => $('.modal textarea')?.focus());
-    // 有 Key 就立刻开始分解：AI 先给草案，用户再用一段话调整
-    if (hasKey()) Actions['plan-ai']();
   },
   'plan-ai': () => withAI(planState, refreshModal, async () => {
     planState.proposal = null;

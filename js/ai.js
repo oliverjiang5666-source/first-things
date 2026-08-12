@@ -49,10 +49,39 @@ function friendlyError(status, data) {
   return msg || `请求失败（${status}）`;
 }
 
+// 挂起是最差的失败方式：连不上 openrouter.ai（如大陆直连被墙）时 fetch 会永远 pending，
+// 界面就成了「点了没反应」。统一 150 秒硬超时，超时给出指向网络的明确报错。
+const REQUEST_TIMEOUT_MS = 150_000;
+
 async function rawCall(body, { stream = false, onDelta = null, signal = null } = {}) {
   const key = state.settings.apiKey?.trim();
   if (!key) { const e = new Error('还没有设置 API Key'); e.noKey = true; throw e; }
 
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  const onOuterAbort = () => ctrl.abort();
+  if (signal) {
+    if (signal.aborted) { clearTimeout(timer); const e = new Error('已取消'); e.name = 'AbortError'; throw e; }
+    signal.addEventListener('abort', onOuterAbort);
+  }
+  const timeoutError = () => {
+    const e = new Error('请求超时（150 秒无响应）：当前网络可能无法连通 openrouter.ai（中国大陆需要代理），也可能服务暂时过慢，稍后再试。');
+    e.timeout = true; // 网络黑洞换模型也没用，不走降级链再等一轮
+    return e;
+  };
+
+  try {
+    return await rawCallInner(body, key, { stream, onDelta, signal: ctrl.signal });
+  } catch (err) {
+    if (err.name === 'AbortError' && !signal?.aborted) throw timeoutError();
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onOuterAbort);
+  }
+}
+
+async function rawCallInner(body, key, { stream, onDelta, signal }) {
   let res;
   try {
     res = await fetch(API_URL, {
@@ -115,8 +144,8 @@ async function rawCall(body, { stream = false, onDelta = null, signal = null } =
   return full;
 }
 
-// effort 可按调用覆盖：交互式重活（计划/洞察）用设置里的档位（默认 max），
-// 「一句话」解析用 high（秒级返回、精度足够），后台观察用 medium（高频、廉价）。
+// effort 分层：所有交互式调用（计划/分解/点评/摘要/对话）固定 high——几十秒内返回，
+// 等待可预期；只有「每周深度洞察」用设置档位（默认 max），后台观察用 medium（高频、廉价）。
 async function callAI({ system, messages, maxTokens = 16000, schema = null, schemaName = 'result', stream = false, onDelta = null, signal = null, effort = null }) {
   const model = (state.settings.model || 'openai/gpt-5.6-sol').trim();
   const eff = effort || state.settings.effort || 'max';
@@ -138,7 +167,7 @@ async function callAI({ system, messages, maxTokens = 16000, schema = null, sche
   const rawOf = (e) => (e.rawMessage || e.message || '').toLowerCase();
   const isSchemaErr = (e) => e.status === 400 && schema && /response_format|json_schema|structured|schema/.test(rawOf(e));
   const isEffortErr = (e) => e.status === 400 && /reasoning|effort/.test(rawOf(e));
-  const isFatal = (e) => e.name === 'AbortError' || e.noKey || [401, 402, 403].includes(e.status);
+  const isFatal = (e) => e.name === 'AbortError' || e.noKey || e.timeout || [401, 402, 403].includes(e.status);
 
   try {
     return await rawCall(makeBody(model, eff, true), opts);
@@ -187,6 +216,7 @@ export async function aiPlanDay(brainDump, prior = null) {
     system: composeSystem('plan-day'),
     messages: [{ role: 'user', content: planDayPrompt(brainDump, prior) }],
     schema: PLAN_DAY_SCHEMA, schemaName: 'day_plan',
+    effort: 'high',
   });
   const plan = parseStructured(text);
   plan.mits = (plan.mits || []).slice(0, 3).map((t) => ({ ...t, goalId: validateGoalId(t.goalId) }));
@@ -200,6 +230,7 @@ export async function aiPlanWeek(input = '', prior = null) {
     system: composeSystem('plan-week'),
     messages: [{ role: 'user', content: planWeekPrompt(input, prior) }],
     schema: PLAN_WEEK_SCHEMA, schemaName: 'week_plan',
+    effort: 'high',
   });
   const plan = parseStructured(text);
   plan.priorities = (plan.priorities || []).slice(0, 5).map((p) => ({ ...p, goalId: validateGoalId(p.goalId) }));
@@ -211,6 +242,7 @@ export async function aiDecomposeGoal(title, why) {
     system: composeSystem('decompose'),
     messages: [{ role: 'user', content: decomposePrompt(title, why) }],
     schema: DECOMPOSE_SCHEMA, schemaName: 'goal_decomposition',
+    effort: 'high',
   });
   return parseStructured(text);
 }
@@ -219,7 +251,7 @@ export async function aiReviewDay(reflection) {
   return callAI({
     system: composeSystem('review-day'),
     messages: [{ role: 'user', content: reviewDayPrompt(reflection) }],
-    maxTokens: 8000,
+    maxTokens: 8000, effort: 'high',
   });
 }
 
@@ -227,7 +259,7 @@ export async function aiWeekSummary(weekContext) {
   return callAI({
     system: composeSystem('week-summary'),
     messages: [{ role: 'user', content: weekSummaryPrompt(weekContext) }],
-    maxTokens: 8000,
+    maxTokens: 8000, effort: 'high',
   });
 }
 
@@ -235,7 +267,7 @@ export async function aiMonthSummary(monthLabel, weeklySummaries) {
   return callAI({
     system: composeSystem('month-summary'),
     messages: [{ role: 'user', content: monthSummaryPrompt(monthLabel, weeklySummaries) }],
-    maxTokens: 8000,
+    maxTokens: 8000, effort: 'high',
   });
 }
 

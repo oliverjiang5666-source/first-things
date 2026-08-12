@@ -21,18 +21,27 @@ applyTheme();
 render();
 subscribe(render);
 
+// 任何动作抛错都不能变成「点了没反应」：捕获后 toast 出来，同步异步都兜住
+function dispatch(fn, el, e) {
+  const fail = (err) => { console.error(err); toast(`出错了：${err?.message || err}`); };
+  try {
+    const r = fn(el, e);
+    if (r && typeof r.catch === 'function') r.catch(fail);
+  } catch (err) { fail(err); }
+}
+
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
   const fn = Actions[el.dataset.action];
-  if (fn) fn(el, e);
+  if (fn) dispatch(fn, el, e);
 });
 
 document.addEventListener('change', (e) => {
   const el = e.target.closest('[data-change]');
   if (!el) return;
   const fn = Changes[el.dataset.change];
-  if (fn) fn(el, e);
+  if (fn) dispatch(fn, el, e);
 });
 
 document.addEventListener('keydown', (e) => {
@@ -46,7 +55,7 @@ document.addEventListener('keydown', (e) => {
   if (el.tagName === 'TEXTAREA' && e.shiftKey) return;
   e.preventDefault();
   const fn = Actions[el.dataset.enter];
-  if (fn) fn(el, e);
+  if (fn) dispatch(fn, el, e);
 });
 
 // re-render when the date rolls over while the app stays open
