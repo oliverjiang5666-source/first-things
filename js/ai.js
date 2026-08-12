@@ -6,10 +6,10 @@
 
 import { state, goalById } from './store.js';
 import {
-  composeSystem, chatContext,
+  composeSystem, coachContext,
   planDayPrompt, planWeekPrompt, decomposePrompt, reviewDayPrompt,
-  weekSummaryPrompt, monthSummaryPrompt, insightPrompt, applyPrompt, briefPrompt,
-  PLAN_DAY_SCHEMA, PLAN_WEEK_SCHEMA, DECOMPOSE_SCHEMA, INSIGHT_SCHEMA, APPLY_SCHEMA, BRIEF_SCHEMA,
+  weekSummaryPrompt, monthSummaryPrompt, insightPrompt, briefPrompt,
+  PLAN_DAY_SCHEMA, PLAN_WEEK_SCHEMA, DECOMPOSE_SCHEMA, INSIGHT_SCHEMA, COACH_SCHEMA, BRIEF_SCHEMA,
 } from './prompts.js';
 
 // ui.js 的「查看上下文 / 复制给任意 AI」直接用这些构造器
@@ -249,17 +249,23 @@ export async function aiInsight() {
   return parseStructured(text);
 }
 
-// 一句话 → 结构化修改。effort 固定 high：秒级返回、解析精度足够。
-export async function aiApply(sentence) {
+// 教练对话框：用户说什么都行（安排/调整/记录/复盘/提问），模型自己理解、
+// 需要时输出 ops 由应用执行。上下文放 system 且每轮重建——上一轮的修改立即可见。
+// effort 固定 high：对话要秒级返回，解析与安排精度足够。
+export async function aiCoach(messages, signal = null) {
+  const system = `${composeSystem('coach')}
+
+以下是用户当前的现状与历史（应用自动整理，每轮对话都会刷新；短 id 用于 ops 引用）：
+
+${coachContext()}`;
   const text = await callAI({
-    system: composeSystem('apply'),
-    messages: [{ role: 'user', content: applyPrompt(sentence) }],
-    schema: APPLY_SCHEMA, schemaName: 'apply_ops',
-    maxTokens: 12000, effort: 'high',
+    system, messages,
+    schema: COACH_SCHEMA, schemaName: 'coach_turn',
+    maxTokens: 16000, effort: 'high', signal,
   });
   const r = parseStructured(text);
   r.ops = Array.isArray(r.ops) ? r.ops : [];
-  r.summary = r.summary || '';
+  r.reply = r.reply || '';
   return r;
 }
 
@@ -274,15 +280,6 @@ export async function aiBrief() {
   const r = parseStructured(text);
   if (!r.headline) throw new Error('empty brief');
   return r;
-}
-
-export async function aiChat(chatMessages, onDelta, signal) {
-  const system = `${composeSystem('chat')}
-
-以下是用户当前的完整现状（由应用自动整理）：
-
-${chatContext()}`;
-  return callAI({ system, messages: chatMessages, stream: true, onDelta, maxTokens: 16000, signal });
 }
 
 export async function testConnection() {

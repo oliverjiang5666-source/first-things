@@ -10,7 +10,7 @@
 //   每个 SPEC 都写明职责边界（做什么）和拒绝规则（什么情况宁可不做）；
 // · 上下文来自 context.js 的分层记忆（今天全量 → 近7天单行 → 近4周复盘 → 月度浓缩，
 //   9000 字符预算内裁剪），永远以【当前时间】（北京时间）开头；
-//   apply/brief 这类高频调用只带核心层，省钱且更快；
+//   brief 这类高频轻调用只带核心层；coach（对话框）带短 id + 完整历史层；
 // · 结构化输出的 JSON Schema 也集中在这里（它是契约的一部分）；
 //   传输、strict json_schema 与降级链在 ai.js，那边只管「怎么发」。
 
@@ -70,9 +70,7 @@ const SPECS = {
 - 瓶颈要拆到根：它是精力问题、优先级问题、分解问题还是环境问题？为什么其他问题是它的衍生？
 - 杠杆点 = 投入最小、撬动最大的调整；实验必须具体、下周就能做、可验证。诚实，不奉承。`,
 
-  'chat': `本次职责：随时对话的教练。结合用户现状回答，能引用具体数据就引用。回答克制精炼，一般不超过 200 字；用户明确要求展开时才展开。`,
-
-  'apply': `本次职责：指令解析器。把用户的一句话翻译成对系统数据的结构化修改（ops 列表），由应用执行。
+  'coach': `本次职责：随身教练对话。用户想到什么就直接说——安排任务、调整日程、记录完成、发一段复盘、或只是提问。你自己理解意图、自己动手：需要改数据就输出 ops（应用会立即执行并把变更清单展示给用户，用户可一键撤销），纯提问就只回复。
 
 可用操作（type）：
 - add_task 新任务（date 为 null 即今天；mit=今日要事；urgent=紧急；estMin 默认 30）
@@ -80,19 +78,22 @@ const SPECS = {
 - complete_task 完成任务（可带 actMin 实际分钟）；reopen_task 取消完成；drop_task 放弃
 - move_task 把任务挪到 date 那天
 - add_inbox 记进收集箱；remove_inbox 删除收集箱条目；inbox_to_day 把收集箱条目变成 date 那天的任务
-- set_reflection 写 date 那天的反思（会整体覆盖：需要保留原文时，把原文一并写进 text）
+- set_reflection 写 date 那天的反思正文（会整体覆盖：需要保留原文时，把原文一并写进 text）
+- review_day 标记 date 那天复盘完成；text 填你对这一天的教练点评（2-3 句：先一个基于数据的真实亮点，再一个明天可执行的建议），会展示在当天复盘卡上
+- set_week_review 写周复盘摘要（date 落在哪周就写哪周，null=本周）；text 用第一人称、不超过 80 字，会成为长期记忆被反复引用
 - add_priority 新增一条本周要事；toggle_priority 勾选/取消勾选本周要事
 - complete_milestone 完成某个里程碑
 - set_wake / set_sleep（text 填 HH:MM）；set_exercise（text 填描述）修改作息
 - note 不改数据、只想对用户说明的一句话
 
 规则：
-- 只做用户明确表达的修改。可以补全合理细节（任务关联哪个目标、预计时长、时间块），但不发明用户没说的事项。
-- 引用已有对象必须用上下文里标注的短 id：任务 [t:xxxx]、收集箱 [i:xxxx]、本周要事 [p:xxxx]、里程碑 [m:xxxx]、目标 [id:xxxx]。找不到对应对象就跳过该操作，并在 summary 里说明。
-- 相对日期（今天/明天/周五）一律按【当前时间】的北京时间解析成 YYYY-MM-DD；「上午/下午/晚上」等模糊时段可落到合理的 HH:MM（按 30 分钟对齐）。
+- 只做用户明确表达的修改。可以补全合理细节（任务关联哪个目标、预计时长、时间块），但不发明用户没说的事项。安排类请求尽量给每件事落时间块，先排要事。
+- 引用已有对象必须用上下文里标注的短 id：任务 [t:xxxx]、收集箱 [i:xxxx]、本周要事 [p:xxxx]、里程碑 [m:xxxx]、目标 [id:xxxx]。找不到对应对象就跳过该操作，并在 reply 里说明。
+- 相对日期（今天/明天/周五）一律按【当前时间】的北京时间解析成 YYYY-MM-DD；「上午/下午/晚上」等模糊时段可落到合理的 HH:MM（按 30 分钟对齐），只把任务安排进还没过去的时段。
 - 用户说完成了某件事：优先匹配已有任务标记完成；没有对应任务就新建一条已完成的任务，把事实记下来。
-- 拿不准用户意图时：ops 留空，把疑问写进 clarification——宁可问，不要猜。
-- summary 用一句话说清这批修改要做什么。`,
+- 用户发来一段复盘（讲今天做得怎么样、感受、教训）：把它整理成条理清晰的第一人称反思写入 set_reflection（保留用户原意与关键细节，可分「进展 / 卡点 / 明天」几行），再用 review_day 标记完成并附上你的点评；如果这段话明显在总结一整周，改用 set_week_review。
+- 拿不准用户意图时：ops 留空，把要确认的问题写进 reply——宁可问一句，不要猜。
+- reply 是对话气泡：1-3 句，克制精炼。变更细节不必复述（用户会看到清单），说清你的理解、以及最值得提醒的一点就够；用户明确要求展开时才展开。`,
 
   'brief': `本次职责：安静的观察员。看一眼用户当下的数据，说一句此刻最值得注意的话。
 规则：
@@ -175,23 +176,14 @@ export function insightPrompt() {
 请做一次深度分析：patterns 2-4 个行为模式（各带具体证据）；bottleneck 当前最大瓶颈及第一性原理拆解；leverage 1-3 个杠杆点；experiment 下周的一个小实验；oneLine 一句话总结。`;
 }
 
-export function applyPrompt(sentence) {
-  return `${buildContext('apply')}
-
-【用户的一句话】
-${sentence.trim()}
-
-请把它翻译成 ops。`;
-}
-
 export function briefPrompt() {
   return `${buildContext('brief')}
 
 请给出此刻的观察（headline + 可选 suggestion）。`;
 }
 
-export function chatContext() {
-  return buildContext('chat');
+export function coachContext() {
+  return buildContext('coach');
 }
 
 // ---------- JSON Schema（结构化输出契约） ----------
@@ -298,7 +290,7 @@ export const INSIGHT_SCHEMA = {
 
 export const OP_TYPES = [
   'add_task', 'update_task', 'complete_task', 'reopen_task', 'drop_task', 'move_task',
-  'add_inbox', 'remove_inbox', 'inbox_to_day', 'set_reflection',
+  'add_inbox', 'remove_inbox', 'inbox_to_day', 'set_reflection', 'review_day', 'set_week_review',
   'add_priority', 'toggle_priority', 'complete_milestone',
   'set_wake', 'set_sleep', 'set_exercise', 'note',
 ];
@@ -308,9 +300,9 @@ const APPLY_OP = {
   required: ['type', 'date', 'title', 'text', 'taskId', 'inboxId', 'goalId', 'priorityId', 'milestoneId', 'estMin', 'actMin', 'blockStart', 'mit', 'urgent'],
   properties: {
     type: { type: 'string', enum: OP_TYPES },
-    date: { ...nullable('string'), description: 'YYYY-MM-DD；null = 今天' },
+    date: { ...nullable('string'), description: 'YYYY-MM-DD；null = 今天/本周' },
     title: { ...nullable('string'), description: '任务/收集箱/本周要事的标题' },
-    text: { ...nullable('string'), description: '反思正文 / 作息值 / note 内容' },
+    text: { ...nullable('string'), description: '反思正文 / 复盘点评或摘要 / 作息值 / note 内容' },
     taskId: { ...nullable('string'), description: '上下文 [t:xxxx] 的 xxxx' },
     inboxId: { ...nullable('string'), description: '上下文 [i:xxxx] 的 xxxx' },
     goalId: { ...nullable('string'), description: '上下文 [id:...] 的完整目标 id' },
@@ -324,13 +316,12 @@ const APPLY_OP = {
   },
 };
 
-export const APPLY_SCHEMA = {
+export const COACH_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['summary', 'ops', 'clarification'],
+  required: ['reply', 'ops'],
   properties: {
-    summary: { type: 'string', description: '一句话：这批修改要做什么' },
-    ops: { type: 'array', items: APPLY_OP },
-    clarification: { ...nullable('string'), description: '意图不明时要问用户的问题；明确时为 null' },
+    reply: { type: 'string', description: '对话气泡正文：1-3 句；需要澄清时把问题写在这里且 ops 留空' },
+    ops: { type: 'array', items: APPLY_OP, description: '要执行的修改；纯回答时为空数组' },
   },
 };
 

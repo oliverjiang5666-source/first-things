@@ -12,9 +12,9 @@ import {
 import {
   hasKey, MODELS, EFFORTS, aiPlanDay, planDayPrompt, aiPlanWeek, planWeekPrompt,
   aiDecomposeGoal, aiReviewDay, reviewDayPrompt, aiWeekSummary, weekSummaryPrompt,
-  aiMonthSummary, aiInsight, insightPrompt, aiChat, testConnection, aiApply,
+  aiMonthSummary, aiInsight, insightPrompt, aiCoach, testConnection,
 } from './ai.js';
-import { planOps, applyOps } from './apply.js';
+import { applyOps } from './apply.js';
 import { refreshBrief, autoComment } from './auto.js';
 import { buildContext, contextMeta } from './context.js';
 import { q2TrendChart } from './charts.js';
@@ -30,9 +30,7 @@ let currentView = 'today';
 let curWeek = thisWeekKey();
 let focusQuickAdd = false;
 
-// 一句话指令条 + 变更预览 + 单步撤销
-let nlState = { text: '', loading: false, error: null };
-let nlPreview = null;
+// 教练对话应用改动后的单步撤销快照
 let lastSnapshot = null;
 let briefLoading = false;
 
@@ -67,7 +65,7 @@ function openModal(renderFn, mountFn = null) {
 function refreshModal() { if (modalRender) paintModal(); }
 function closeModal() {
   modalRender = null; modalMount = null;
-  if (chatAbort) { chatAbort.abort(); chatAbort = null; }
+  if (coachAbort) { coachAbort.abort(); coachAbort = null; }
   $('#modal-root').innerHTML = '';
 }
 function paintModal() {
@@ -169,15 +167,14 @@ function renderToday() {
 
   let html = `<div class="page-head"><h1>${fmtDay(tk)}</h1><div class="sub">${streak > 0 ? `复盘连续 ${streak} 天` : '今天也从要事开始'}</div></div>`;
 
-  // 一句话指令条：说人话 → AI 转成结构化修改 → 预览确认
+  // 教练入口：这里说的话直接进对话框，教练自己理解、自己动手
   if (hasKey()) {
     html += `<div class="card nl-card">
       <div class="nl-bar">
         <span class="nl-icon">✦</span>
-        <input type="text" placeholder="一句话交给教练：完成了跑步用40分 / 下午3点加个牙医 / 写作挪到明天…" value="${esc(nlState.text)}" data-enter="nl-submit" ${nlState.loading ? 'disabled' : ''}>
-        <button class="btn primary small" data-action="nl-submit" ${nlState.loading ? 'disabled' : ''}>${nlState.loading ? '<span class="spinner"></span>' : '执行'}</button>
+        <input type="text" placeholder="跟教练说：安排、调整、完成了什么、今晚复盘…直接发" data-enter="coach-bar">
+        <button class="btn primary small" data-action="coach-bar">发送</button>
       </div>
-      ${nlState.error ? `<div class="ai-error" style="margin-top:8px">${esc(nlState.error)}</div>` : ''}
     </div>`;
   }
 
@@ -663,7 +660,7 @@ function settingsModal() {
     <button class="btn small" data-action="demo-load">加载示例数据</button>
     <button class="btn small danger" data-action="wipe-data">清空所有数据</button>
   </div>
-  <div class="muted small mt12">要事 First Things v1.2 · 数据存储在本机浏览器 · 「今天」按北京时间（UTC+8）判定 · <a href="https://github.com/oliverjiang5666-source/first-things" target="_blank" rel="noreferrer">GitHub</a></div>
+  <div class="muted small mt12">要事 First Things v1.3 · 数据存储在本机浏览器 · 「今天」按北京时间（UTC+8）判定 · <a href="https://github.com/oliverjiang5666-source/first-things" target="_blank" rel="noreferrer">GitHub</a></div>
   <div class="modal-actions"><button class="btn" data-action="modal-close">完成</button></div>`;
 }
 
@@ -682,35 +679,92 @@ function inboxModal() {
   <div class="modal-actions"><button class="btn" data-action="modal-close">关闭</button></div>`;
 }
 
-// ----- chat -----
+// ----- 教练对话框 -----
+// 一个入口装下所有事：安排/调整/记录 → AI 输出 ops 立即执行（可撤销）；
+// 复盘一段话 → AI 整理成反思并标记完成；纯提问 → 只回答。
+// 历史保存在内存（数据修改本身已持久化）；每轮调用都重建最新上下文。
 
-let chatHistory = [];
-let chatAbort = null;
-let chatBusy = false;
+let coachLog = [];   // {role:'user'|'assistant', text, applied?, skipped?, canUndo?, undone?, error?}
+let coachAbort = null;
+let coachBusy = false;
 
-function chatModal() {
-  const msgs = chatHistory.map((m) => `<div class="msg ${m.role}">${esc(m.content)}</div>`).join('');
-  return `<h2>问问教练</h2><div class="modal-sub">教练了解你的目标、本周计划和最近的复盘</div>
-  <div class="chat-box">
-    <div class="chat-log" id="chat-log">${msgs || '<div class="empty">可以问：「我现在最该做什么？」「帮我看看这周的安排合理吗？」<br>「我总是坚持不下来，怎么办？」</div>'}</div>
-    ${hasKey() ? `<div class="chat-input-row">
-      <textarea placeholder="输入消息，回车发送" data-enter="chat-send" id="chat-input"></textarea>
-      <button class="btn primary" data-action="chat-send" ${chatBusy ? 'disabled' : ''}>发送</button>
-    </div>` : `<div class="mt12">${aiGate('chat', '')}</div>`}
-  </div>
-  ${hasKey() ? ctxPreview(buildContext('chat')) : ''}`;
+function coachMsgHTML(m) {
+  if (m.role === 'user') return `<div class="msg user">${esc(m.text)}</div>`;
+  let receipts = '';
+  if (m.applied?.length || m.skipped?.length) {
+    receipts = `<div class="coach-ops${m.undone ? ' undone' : ''}">
+      ${(m.applied || []).map((t) => `<div class="coach-op">✓ ${esc(t)}</div>`).join('')}
+      ${(m.skipped || []).map((t) => `<div class="coach-op skip">✕ ${esc(t)}</div>`).join('')}
+      ${m.undone ? '<div class="coach-op skip noline">这批修改已撤销</div>'
+        : (m.canUndo ? '<button class="coach-undo" data-action="coach-undo">撤销这批修改</button>' : '')}
+    </div>`;
+  }
+  return `<div class="msg assistant${m.error ? ' err' : ''}">${esc(m.text)}${receipts}</div>`;
 }
 
-function appendChatDOM(role, text) {
+function coachModal() {
+  const msgs = coachLog.map(coachMsgHTML).join('');
+  const pending = coachBusy ? '<div class="msg assistant pending"><span class="spinner"></span> 正在理解并处理…</div>' : '';
+  const emptyHint = `<div class="empty">安排、调整、记录、复盘，都直接说——<br>
+    「明天上午 10 点安排 90 分钟写论文」<br>
+    「跑步完成了，用时 40 分钟」<br>
+    「今天复盘：上午很专注，下午被会议打散了…」<br>
+    「我现在最该做什么？」</div>`;
+  return `<h2>教练</h2><div class="modal-sub">直接说，教练自己理解、自己动手；改动立即生效，可一键撤销</div>
+  <div class="chat-box">
+    <div class="chat-log" id="chat-log">${msgs || (coachBusy ? '' : emptyHint)}${pending}</div>
+    ${hasKey() ? `<div class="chat-input-row">
+      <textarea placeholder="输入消息，回车发送" data-enter="coach-send" id="chat-input"></textarea>
+      <button class="btn primary" data-action="coach-send" ${coachBusy ? 'disabled' : ''}>发送</button>
+    </div>` : `<div class="mt12">${aiGate('chat', '')}</div>`}
+  </div>
+  ${hasKey() ? ctxPreview(buildContext('coach')) : ''}`;
+}
+
+function coachMount() {
   const log = $('#chat-log');
-  if (!log) return null;
-  if (log.querySelector('.empty')) log.innerHTML = '';
-  const div = document.createElement('div');
-  div.className = `msg ${role}`;
-  div.textContent = text;
-  log.appendChild(div);
-  log.scrollTop = log.scrollHeight;
-  return div;
+  if (log) log.scrollTop = log.scrollHeight;
+  $('#chat-input')?.focus();
+}
+
+// 发给模型的对话历史：带上执行回执，模型才知道自己上一轮做了什么、有没有被撤销
+function coachApiMessages() {
+  return coachLog.slice(-16).map((m) => {
+    if (m.role === 'user') return { role: 'user', content: m.text };
+    let c = m.text;
+    if (m.applied?.length) c += `\n[已执行] ${m.applied.join('；')}`;
+    if (m.skipped?.length) c += `\n[已跳过] ${m.skipped.join('；')}`;
+    if (m.undone) c += '\n[用户其后撤销了这批修改]';
+    return { role: 'assistant', content: c };
+  });
+}
+
+async function coachSend(text) {
+  coachLog.push({ role: 'user', text });
+  coachBusy = true;
+  refreshModal();
+  coachAbort = new AbortController();
+  try {
+    const r = await aiCoach(coachApiMessages(), coachAbort.signal);
+    const msg = { role: 'assistant', text: r.reply || '好的。' };
+    if (r.ops.length) {
+      const snap = snapshot();
+      const { applied, skipped } = applyOps(r.ops);
+      msg.applied = applied;
+      msg.skipped = skipped;
+      if (applied.length) {
+        lastSnapshot = snap;
+        for (const m of coachLog) m.canUndo = false; // 单步撤销：只有最新一批可撤
+        msg.canUndo = true;
+      }
+    }
+    coachLog.push(msg);
+  } catch (e) {
+    if (e.name !== 'AbortError') coachLog.push({ role: 'assistant', text: `出错了：${e.message}`, error: true });
+  }
+  coachBusy = false; coachAbort = null;
+  if (coachLog.length > 60) coachLog = coachLog.slice(-60);
+  refreshModal();
 }
 
 // ----- plan day -----
@@ -773,34 +827,6 @@ function planModal() {
   ${body}
   ${hasKey() ? ctxPreview(planDayPrompt(planState.feedback || '')) : ''}
   <div class="modal-actions"><button class="btn ghost" data-action="modal-close">关闭</button></div>`;
-}
-
-// ----- 一句话 → 变更预览 -----
-
-function nlPreviewModal() {
-  const r = nlPreview;
-  if (!r) return '';
-  const rows = r.plans.map((p, i) => p.ok
-    ? `<div class="ai-item">
-        <input type="checkbox" data-change="nl-check" data-idx="${i}" ${r.checked[i] !== false ? 'checked' : ''}>
-        <div><div class="ai-item-title">${esc(p.text)}</div></div>
-      </div>`
-    : `<div class="ai-item"><div><div class="ai-item-title" style="color:var(--muted)">✕ ${esc(p.text)}</div></div></div>`).join('');
-  const selCount = r.plans.filter((p, i) => p.ok && r.checked[i] !== false).length;
-  return `<h2>确认修改</h2>
-  ${r.summary ? `<div class="modal-sub">${esc(r.summary)}</div>` : ''}
-  ${rows ? `<div class="ai-card"><div class="ai-tag">✦ 将要执行</div>${rows}</div>` : ''}
-  ${r.clarification ? `<div class="ai-card"><div class="ai-tag">✦ 教练想确认</div>
-    <div style="font-size:14px">${esc(r.clarification)}</div>
-    <div class="quick-add" style="margin-top:10px;padding:0;border:none">
-      <input type="text" id="nl-answer-input" placeholder="回答后回车继续" data-enter="nl-answer" ${r.loading ? 'disabled' : ''}>
-      <button class="btn small" data-action="nl-answer" ${r.loading ? 'disabled' : ''}>${r.loading ? '<span class="spinner"></span>' : '继续'}</button>
-    </div></div>` : ''}
-  ${r.error ? `<div class="ai-error">${esc(r.error)}</div>` : ''}
-  <div class="modal-actions">
-    <button class="btn ghost" data-action="modal-close">取消</button>
-    ${selCount ? `<button class="btn primary" data-action="nl-apply" ${r.loading ? 'disabled' : ''}>应用 ${selCount} 项</button>` : ''}
-  </div>`;
 }
 
 // ----- task edit -----
@@ -1031,7 +1057,7 @@ export const Actions = {
   // --- header ---
   'open-settings': () => { testState = { loading: false, result: null, error: null }; openModal(settingsModal); },
   'open-inbox': () => openModal(inboxModal, () => $('.modal input')?.focus()),
-  'open-chat': () => openModal(chatModal, () => $('#chat-input')?.focus()),
+  'open-chat': () => openModal(coachModal, coachMount),
 
   // --- settings ---
   'set-effort': (el) => { update((s) => { s.settings.effort = el.dataset.id; }); refreshModal(); },
@@ -1089,26 +1115,29 @@ export const Actions = {
     refreshModal();
   },
 
-  // --- chat ---
-  'chat-send': async () => {
+  // --- 教练对话框 ---
+  'coach-send': () => {
     const input = $('#chat-input');
     const text = input?.value.trim();
-    if (!text || chatBusy) return;
+    if (!text || coachBusy) return;
     input.value = '';
-    chatBusy = true;
-    chatHistory.push({ role: 'user', content: text });
-    appendChatDOM('user', text);
-    const div = appendChatDOM('assistant', '…');
-    chatAbort = new AbortController();
-    try {
-      const reply = await aiChat(chatHistory, (_, full) => {
-        if (div) { div.textContent = full; $('#chat-log').scrollTop = $('#chat-log').scrollHeight; }
-      }, chatAbort.signal);
-      chatHistory.push({ role: 'assistant', content: reply });
-    } catch (e) {
-      if (e.name !== 'AbortError' && div) div.textContent = `（出错了：${e.message}）`;
-    }
-    chatBusy = false; chatAbort = null;
+    coachSend(text);
+  },
+  // 今天页的输入条：写了字就带着这句话进对话框，空着点开也行
+  'coach-bar': () => {
+    const inp = $('.nl-bar input');
+    const text = inp?.value.trim();
+    if (inp) inp.value = '';
+    openModal(coachModal, coachMount);
+    if (text && !coachBusy) coachSend(text);
+  },
+  'coach-undo': () => {
+    if (!lastSnapshot) { toast('没有可撤销的修改'); return; }
+    restoreSnapshot(lastSnapshot);
+    lastSnapshot = null;
+    const m = [...coachLog].reverse().find((x) => x.canUndo);
+    if (m) { m.canUndo = false; m.undone = true; }
+    render(); refreshModal(); toast('已撤销');
   },
 
   // --- today ---
@@ -1141,63 +1170,6 @@ export const Actions = {
     const r = stopTimer();
     if (r) toast(`「${r.task.title}」记入 ${r.minutes} 分钟`);
     render();
-  },
-
-  // --- 一句话指令 ---
-  'nl-submit': async () => {
-    const inp = $('.nl-bar input');
-    const text = (inp?.value || nlState.text).trim();
-    if (!text || nlState.loading) return;
-    nlState = { text, loading: true, error: null };
-    render();
-    try {
-      const r = await aiApply(text);
-      nlPreview = {
-        sentence: text, summary: r.summary, clarification: r.clarification || null,
-        plans: planOps(r.ops), checked: {}, loading: false, error: null,
-      };
-      nlState = { text: '', loading: false, error: null };
-      openModal(nlPreviewModal, () => $('#nl-answer-input')?.focus());
-    } catch (e) {
-      if (e.name !== 'AbortError') nlState = { text, loading: false, error: e.message };
-      else nlState = { text, loading: false, error: null };
-    }
-    render();
-  },
-  'nl-answer': async () => {
-    const v = $('#nl-answer-input')?.value.trim();
-    if (!v || !nlPreview || nlPreview.loading) return;
-    nlPreview.loading = true; nlPreview.error = null;
-    refreshModal();
-    try {
-      const combined = `${nlPreview.sentence}\n（对你的问题「${nlPreview.clarification}」的回答：${v}）`;
-      const r = await aiApply(combined);
-      nlPreview = {
-        sentence: combined, summary: r.summary, clarification: r.clarification || null,
-        plans: planOps(r.ops), checked: {}, loading: false, error: null,
-      };
-    } catch (e) {
-      nlPreview.loading = false;
-      if (e.name !== 'AbortError') nlPreview.error = e.message;
-    }
-    refreshModal();
-  },
-  'nl-apply': () => {
-    const r = nlPreview;
-    if (!r) return;
-    const ops = r.plans.filter((p, i) => p.ok && r.checked[i] !== false).map((p) => p.op);
-    if (!ops.length) return;
-    lastSnapshot = snapshot();
-    const { applied, skipped } = applyOps(ops);
-    closeModal(); nlPreview = null; render();
-    toast(`已应用 ${applied.length} 项${skipped.length ? `，跳过 ${skipped.length} 项` : ''}`, { label: '撤销', action: 'undo-apply', ms: 8000 });
-  },
-  'undo-apply': (el) => {
-    if (!lastSnapshot) { toast('没有可撤销的修改'); return; }
-    restoreSnapshot(lastSnapshot);
-    lastSnapshot = null;
-    el?.closest('.toast')?.remove();
-    render(); toast('已撤销');
   },
 
   // --- 教练观察 ---
@@ -1589,7 +1561,6 @@ export const Changes = {
   'set-reflection': (el) => update(() => { ensureDay(el.dataset.day).reflection = el.value; }),
   'plan-feedback': (el) => { planState.feedback = el.value; },
   'plan-check': (el) => { planState.checked[el.dataset.key] = el.checked; },
-  'nl-check': (el) => { if (nlPreview) { nlPreview.checked[Number(el.dataset.idx)] = el.checked; refreshModal(); } },
   'wiz-feedback': (el) => { wiz.feedback = el.value; },
   'task-title': (el) => mutTask((t) => { t.title = el.value.trim() || t.title; }),
   'task-goal': (el) => mutTask((t) => { t.goalId = el.value || null; }),

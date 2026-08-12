@@ -1,12 +1,12 @@
 // ============ ops engine：AI 指令 → 数据修改 ============
-// aiApply 返回的 ops（见 prompts.js 的 APPLY_SCHEMA）在这里落地：
-// planOps 先把每个 op 解析成「人话描述 + 执行闭包」，UI 预览确认后 applyOps 在
-// 一次 update() 里全部执行。找不到引用对象的 op 直接跳过并说明，绝不猜。
-// 撤销：UI 在 applyOps 前拍 snapshot()，toast 上的「撤销」用 restoreSnapshot 还原。
+// 教练对话返回的 ops（见 prompts.js 的 COACH_SCHEMA）在这里落地：
+// planOps 先把每个 op 解析成「人话描述 + 执行闭包」，applyOps 在一次 update()
+// 里全部执行，描述文字同时用作消息里的执行回执。找不到引用对象的 op 直接跳过并说明，绝不猜。
+// 撤销：UI 在 applyOps 前拍 snapshot()，回执下的「撤销这批修改」用 restoreSnapshot 还原。
 
 import {
   state, update, ensureDay, ensureWeek, newTask, uid, goalById,
-  todayKey, thisWeekKey, fmtDay, settleTimer,
+  todayKey, thisWeekKey, fmtDay, settleTimer, weekKeyOf, weekLabel, parseKey,
 } from './store.js';
 
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -209,6 +209,24 @@ function planOp(op) {
     const brief = op.text.trim().slice(0, 24);
     return ok(`写${dayLabel(day)}的反思：「${brief}${op.text.trim().length > 24 ? '…' : ''}」`,
       () => { ensureDay(day).reflection = op.text.trim(); });
+  }
+
+  if (t === 'review_day') {
+    const day = opDate(op);
+    return ok(`标记${dayLabel(day)}复盘完成${op.text?.trim() ? '，附教练点评' : ''}`,
+      () => {
+        const d = ensureDay(day);
+        d.reviewedAt = Date.now();
+        if (op.text?.trim()) d.aiComment = op.text.trim();
+      });
+  }
+
+  if (t === 'set_week_review') {
+    if (!op.text?.trim()) return skip('周复盘内容为空，已跳过');
+    const wk = op.date && DATE.test(op.date) ? weekKeyOf(parseKey(op.date)) : thisWeekKey();
+    const brief = op.text.trim().slice(0, 24);
+    return ok(`写${weekLabel(wk)}的周复盘：「${brief}${op.text.trim().length > 24 ? '…' : ''}」`,
+      (s) => { ensureWeek(wk).review = { summary: op.text.trim(), reviewedAt: Date.now() }; void s; });
   }
 
   if (t === 'add_priority') {

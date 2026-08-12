@@ -88,7 +88,7 @@ function weekSection(withIds = false) {
 }
 
 function todaySection(purpose) {
-  const withIds = purpose === 'apply';
+  const withIds = purpose === 'coach';
   const tk = todayKey();
   const day = state.days[tk];
   const lines = [`【今天】${fmtDay(tk)}（date=${tk}）`];
@@ -175,11 +175,12 @@ function lastInsightSection() {
 // Assemble under a char budget. Sections are ordered by importance;
 // when over budget we drop from the tail (oldest, most-compressed tiers first).
 export function buildContext(purpose = 'chat') {
-  const withIds = purpose === 'apply';
+  // coach（对话框）要引用具体对象，带短 id；也带完整历史层——它既安排日程也组织复盘
+  const withIds = purpose === 'coach';
   const core = [nowLine(), profileSection(), goalsSection(withIds), weekSection(withIds), todaySection(purpose), signalsSection()]
     .filter(Boolean);
-  // apply/brief 是高频轻调用：只给核心现状，不带历史层（快、省，也足够判断）
-  let optional = (purpose === 'apply' || purpose === 'brief')
+  // brief 是高频轻调用：只给核心现状，不带历史层（快、省，也足够判断）
+  let optional = purpose === 'brief'
     ? []
     : [recentDaysSection(7), lastInsightSection(), weeklyReviewsSection(4), monthsSection(2)].filter(Boolean);
 

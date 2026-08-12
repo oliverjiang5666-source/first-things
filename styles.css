@@ -504,3 +504,21 @@ details.ctx-preview pre {
   font-weight: 700; color: inherit; background: none; padding: 2px 4px;
   text-decoration: underline; text-underline-offset: 3px;
 }
+
+/* ===== v1.3 教练对话框：消息里的变更回执 + 撤销 ===== */
+
+.msg.pending { color: var(--muted); }
+.msg.assistant.err { color: var(--q1); }
+.coach-ops {
+  margin-top: 8px; padding-top: 7px; border-top: 1px dashed var(--line);
+  display: flex; flex-direction: column; gap: 3px;
+}
+.coach-op { font-size: 12.5px; color: var(--accent-ink); line-height: 1.5; }
+.coach-op.skip { color: var(--muted); }
+.coach-ops.undone .coach-op:not(.noline) { text-decoration: line-through; opacity: .55; }
+.coach-undo {
+  margin-top: 4px; align-self: flex-start; border: none; background: none; padding: 0;
+  cursor: pointer; font: inherit; font-size: 12.5px; color: var(--accent-ink);
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.coach-undo:hover { color: var(--accent); }
