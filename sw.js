@@ -1,7 +1,8 @@
-const CACHE = 'yaoshi-v1.0.1';
+const CACHE = 'yaoshi-v1.2.0';
 const ASSETS = [
   './', './index.html', './styles.css', './manifest.webmanifest', './icon.svg',
   './js/main.js', './js/ui.js', './js/store.js', './js/context.js', './js/ai.js', './js/charts.js',
+  './js/prompts.js', './js/apply.js', './js/auto.js',
 ];
 
 self.addEventListener('install', (e) => {

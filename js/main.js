@@ -1,7 +1,8 @@
 // ============ boot & event delegation ============
 
 import { state, update, subscribe, todayKey } from './store.js';
-import { render, Actions, Changes, applyTheme } from './ui.js';
+import { render, Actions, Changes, applyTheme, toast } from './ui.js';
+import { init as initAuto } from './auto.js';
 
 // 本地配置注入：js/config.local.js 在 .gitignore 里，不会进仓库。
 // 在自己电脑上把 API key 写进该文件，就不用每个浏览器手动填一遍；
@@ -59,6 +60,15 @@ function checkDayChange() {
 document.addEventListener('visibilitychange', checkDayChange);
 window.addEventListener('focus', checkDayChange);
 setInterval(checkDayChange, 60_000);
+
+// 后台智能（auto.js 不 import ui，提示统一走这个事件）
+document.addEventListener('yaoshi-toast', (e) => toast(e.detail));
+initAuto();
+
+// 计时进行中：每 30 秒重绘一次，让「已 N 分钟」走起来
+setInterval(() => {
+  if (state.timer && document.visibilityState === 'visible' && !document.querySelector('.overlay')) render();
+}, 30_000);
 
 if ('serviceWorker' in navigator) {
   // 顶层 await 可能让本模块在 load 事件之后才继续执行，因此不能只挂 load 监听

@@ -7,12 +7,15 @@ import {
   dayStats, weekStats, weekGoalMinutes, reviewStreak, unfinishedYesterday, hasAnyData,
   computeSignals, monthKeyOf, fmtMonth, exportJSON, importJSON, wipeAll, seedDemo,
   AREAS, HORIZONS, dateKey, beijingDateOf,
+  snapshot, restoreSnapshot, startTimer, stopTimer, timerElapsedMin,
 } from './store.js';
 import {
   hasKey, MODELS, EFFORTS, aiPlanDay, planDayPrompt, aiPlanWeek, planWeekPrompt,
   aiDecomposeGoal, aiReviewDay, reviewDayPrompt, aiWeekSummary, weekSummaryPrompt,
-  aiMonthSummary, aiInsight, insightPrompt, aiChat, testConnection,
+  aiMonthSummary, aiInsight, insightPrompt, aiChat, testConnection, aiApply,
 } from './ai.js';
+import { planOps, applyOps } from './apply.js';
+import { refreshBrief, autoComment } from './auto.js';
 import { buildContext, contextMeta } from './context.js';
 import { q2TrendChart } from './charts.js';
 
@@ -27,14 +30,28 @@ let currentView = 'today';
 let curWeek = thisWeekKey();
 let focusQuickAdd = false;
 
+// 一句话指令条 + 变更预览 + 单步撤销
+let nlState = { text: '', loading: false, error: null };
+let nlPreview = null;
+let lastSnapshot = null;
+let briefLoading = false;
+
 // ---------- toast ----------
 
-export function toast(msg) {
+// opts: { label, action, ms } —— 带动作按钮的 toast（如「撤销」）
+export function toast(msg, opts = null) {
   const el = document.createElement('div');
   el.className = 'toast';
   el.textContent = msg;
+  if (opts?.label && opts?.action) {
+    const b = document.createElement('button');
+    b.className = 'toast-btn';
+    b.textContent = opts.label;
+    b.dataset.action = opts.action;
+    el.appendChild(b);
+  }
   $('#toast-root').appendChild(el);
-  setTimeout(() => el.remove(), 2600);
+  setTimeout(() => el.remove(), opts?.ms || 2600);
 }
 
 // ---------- modal ----------
@@ -74,10 +91,15 @@ function quadChip(task) {
 }
 
 function taskRow(t, dayKey) {
+  const running = state.timer?.taskId === t.id;
   const timeBits = [];
   if (t.blockStart) timeBits.push(t.blockStart);
-  timeBits.push(`${taskMinutes(t)}分`);
-  return `<div class="task ${t.done ? 'done' : ''}">
+  if (running) timeBits.push(`⏱ 已 ${timerElapsedMin()} 分`);
+  else timeBits.push(t.actMin != null ? `实际 ${t.actMin} 分` : `${taskMinutes(t)}分`);
+  const timerBtn = t.done ? '' : (running
+    ? `<button class="timer-btn on" data-action="timer-stop" title="停止计时并记入实际用时">⏹</button>`
+    : `<button class="timer-btn" data-action="timer-start" data-day="${dayKey}" data-id="${t.id}" title="开始计时">▶</button>`);
+  return `<div class="task ${t.done ? 'done' : ''} ${running ? 'timing' : ''}">
     <button class="check" data-action="toggle-task" data-day="${dayKey}" data-id="${t.id}" title="完成">
       <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
     </button>
@@ -85,6 +107,7 @@ function taskRow(t, dayKey) {
       <div class="task-title" data-action="open-task" data-id="${t.id}" data-day="${dayKey}">${esc(t.title)}</div>
       <div class="task-meta">${goalChip(t)}${quadChip(t)}<span class="chip">${timeBits.join(' · ')}</span></div>
     </div>
+    ${timerBtn}
     <button class="mit-star ${t.mit ? 'on' : ''}" data-action="toggle-mit" data-day="${dayKey}" data-id="${t.id}" title="今日要事（最多 3 件）">★</button>
   </div>`;
 }
@@ -146,7 +169,28 @@ function renderToday() {
 
   let html = `<div class="page-head"><h1>${fmtDay(tk)}</h1><div class="sub">${streak > 0 ? `复盘连续 ${streak} 天` : '今天也从要事开始'}</div></div>`;
 
+  // 一句话指令条：说人话 → AI 转成结构化修改 → 预览确认
+  if (hasKey()) {
+    html += `<div class="card nl-card">
+      <div class="nl-bar">
+        <span class="nl-icon">✦</span>
+        <input type="text" placeholder="一句话交给教练：完成了跑步用40分 / 下午3点加个牙医 / 写作挪到明天…" value="${esc(nlState.text)}" data-enter="nl-submit" ${nlState.loading ? 'disabled' : ''}>
+        <button class="btn primary small" data-action="nl-submit" ${nlState.loading ? 'disabled' : ''}>${nlState.loading ? '<span class="spinner"></span>' : '执行'}</button>
+      </div>
+      ${nlState.error ? `<div class="ai-error" style="margin-top:8px">${esc(nlState.error)}</div>` : ''}
+    </div>`;
+  }
+
+  // 计时中横幅
+  if (state.timer) {
+    const curT = state.days[state.timer.day]?.tasks.find((x) => x.id === state.timer.taskId);
+    if (curT) {
+      html += `<div class="banner timer-banner"><span>⏱</span><span>正在做「${esc(curT.title)}」 · 已 ${timerElapsedMin()} 分钟</span><button class="btn small" data-action="timer-stop" style="margin-left:auto">停止</button></div>`;
+    }
+  }
+
   html += signalChips('warn', 2);
+  html += briefCard();
   html += carryoverCard();
 
   if (!day?.plannedAt && tasks.length === 0) {
@@ -225,6 +269,21 @@ function carryoverCard() {
       <button class="btn small ghost" data-action="carry-drop" data-day="${key}" data-id="${t.id}">放弃</button>
     </div></div>`).join('');
   return `<div class="card"><div class="card-title">昨天未完成 · ${tasks.length} 件</div>${rows}</div>`;
+}
+
+// 教练观察卡：后台自动刷新（auto.js），↻ 手动立即刷新
+function briefCard() {
+  if (!hasKey()) return '';
+  const b = state.assistant?.brief;
+  if (!b || state.assistant.briefDate !== todayKey()) return '';
+  const mins = Math.max(0, Math.round((Date.now() - (b.at || 0)) / 60000));
+  const when = mins < 1 ? '刚刚' : mins < 60 ? `${mins} 分钟前` : `${Math.floor(mins / 60)} 小时前`;
+  return `<div class="card brief-card">
+    <div class="ai-tag">✦ 教练观察<span class="muted" style="font-weight:400;margin-left:6px">${when}</span>
+      <button class="title-action brief-refresh" data-action="brief-refresh" title="立即重新观察" ${briefLoading ? 'disabled' : ''}>${briefLoading ? '<span class="spinner"></span>' : '↻'}</button></div>
+    <div class="brief-headline">${esc(b.headline)}</div>
+    ${b.suggestion ? `<div class="brief-sub">${esc(b.suggestion)}</div>` : ''}
+  </div>`;
 }
 
 let reviewAIState = { loading: false, error: null };
@@ -564,6 +623,13 @@ function settingsModal() {
     <div class="seg">${EFFORTS.map((e) => `<button data-action="set-effort" data-id="${e.id}" class="${s.effort === e.id ? 'active' : ''}">${e.label}</button>`).join('')}</div>
     <div class="hint">「最深思考」对应 GPT-5.6 的 max 推理档，质量最好但更慢更贵；日常「深」通常够用</div></div>
 
+  <div class="field"><label>后台智能</label>
+    <div class="seg">
+      <button data-action="set-autoai" data-id="on" class="${s.autoAI !== false ? 'active' : ''}">开（推荐）</button>
+      <button data-action="set-autoai" data-id="off" class="${s.autoAI === false ? 'active' : ''}">关</button>
+    </div>
+    <div class="hint">开启后教练会在后台自动工作：数据变化时刷新「教练观察」（每天 ≤10 次、轻量档位）、按需生成每周深度洞察、完成复盘后自动点评</div></div>
+
   <div class="btn-row">
     <button class="btn small" data-action="test-conn" ${testState.loading ? 'disabled' : ''}>${testState.loading ? '<span class="spinner"></span> 测试中…' : '测试连接'}</button>
     ${testState.result ? `<span class="small" style="color:var(--accent-ink)">✓ ${esc(testState.result)}</span>` : ''}
@@ -597,7 +663,7 @@ function settingsModal() {
     <button class="btn small" data-action="demo-load">加载示例数据</button>
     <button class="btn small danger" data-action="wipe-data">清空所有数据</button>
   </div>
-  <div class="muted small mt12">要事 First Things v1 · 数据存储在本机浏览器 · 「今天」按北京时间（UTC+8）判定 · <a href="https://github.com/oliverjiang5666-source/first-things" target="_blank" rel="noreferrer">GitHub</a></div>
+  <div class="muted small mt12">要事 First Things v1.2 · 数据存储在本机浏览器 · 「今天」按北京时间（UTC+8）判定 · <a href="https://github.com/oliverjiang5666-source/first-things" target="_blank" rel="noreferrer">GitHub</a></div>
   <div class="modal-actions"><button class="btn" data-action="modal-close">完成</button></div>`;
 }
 
@@ -648,42 +714,93 @@ function appendChatDOM(role, text) {
 }
 
 // ----- plan day -----
+// 交互设计（用户定的）：打开即 AI 从上层目标自动分解草案 → 用户说一段话 →
+// AI 按话做最小调整（带上一轮草案）→ 采纳。采纳只增不删，已有任务永远保留。
 
-let planState = { dump: '', loading: false, error: null, proposal: null, checked: {} };
+let planState = { feedback: '', loading: false, error: null, proposal: null, checked: {} };
+
+// 把当前草案序列化成文字，作为下一轮的「上一轮草案」传给 AI
+function priorDayText(p) {
+  const gname = (id) => (id && goalById(id) ? goalById(id).title : null);
+  const line = (t, star) => `${star ? '★' : '-'} ${t.title}（${[t.blockStart || '未定时间', `${t.estMin || 30}分`, gname(t.goalId)].filter(Boolean).join('，')}）`;
+  const parts = [...(p.mits || []).map((t) => line(t, true)), ...(p.others || []).map((t) => line(t, false))];
+  for (const d of p.defer || []) parts.push(`建议推迟/放弃：${d.title}——${d.reason}`);
+  if (p.rationale) parts.push(`草案思路：${p.rationale}`);
+  return parts.join('\n');
+}
 
 function planModal() {
   const p = planState.proposal;
-  let proposalHTML = '';
+  const loading = planState.loading;
+  let body = '';
+
   if (p) {
     const item = (t, idx, group) => `<div class="ai-item">
       <input type="checkbox" data-change="plan-check" data-key="${group}-${idx}" ${planState.checked[`${group}-${idx}`] !== false ? 'checked' : ''}>
       <div><div class="ai-item-title">${group === 'mits' ? '★ ' : ''}${esc(t.title)}</div>
       <div class="ai-item-meta">${[t.goalId && goalById(t.goalId) ? goalById(t.goalId).title : null, t.blockStart ? t.blockStart + ' 开始' : null, t.estMin + '分'].filter(Boolean).join(' · ')}</div></div>
     </div>`;
-    proposalHTML = `<div class="ai-card">
-      <div class="ai-tag">✦ 建议方案</div>
+    body = `<div class="ai-card">
+      <div class="ai-tag">✦ 今日草案<span class="muted" style="font-weight:400;margin-left:6px">从目标与本周要事分解</span></div>
       <div class="ai-rationale">${esc(p.rationale || '')}</div>
       ${p.mits.map((t, i) => item(t, i, 'mits')).join('')}
       ${p.others.map((t, i) => item(t, i, 'others')).join('')}
-      ${p.defer?.length ? `<div class="section-label" style="margin-top:10px">建议推迟 / 放弃</div>${p.defer.map((d) => `<div class="ai-item"><div><div class="ai-item-title" style="color:var(--muted)">${esc(d.title)}</div><div class="ai-item-meta">${esc(d.reason)}</div></div></div>`).join('')}` : ''}
-      <div class="btn-row mt12">
-        <button class="btn primary" data-action="plan-adopt">采纳所选</button>
-        <button class="btn" data-action="plan-ai" ${planState.loading ? 'disabled' : ''}>重新生成</button>
-      </div>
+      ${p.defer?.length ? `<div class="section-label" style="margin-top:10px">建议推迟 / 放弃（不会自动执行）</div>${p.defer.map((d) => `<div class="ai-item"><div><div class="ai-item-title" style="color:var(--muted)">${esc(d.title)}</div><div class="ai-item-meta">${esc(d.reason)}</div></div></div>`).join('')}` : ''}
+    </div>
+    <div class="field mt12"><label>想调整？直接说一段话</label>
+      <textarea data-change="plan-feedback" placeholder="例：10:00-11:30 有例会；跑步挪到晚上；再加一件「给妈妈打电话」；写作只留 60 分钟" style="min-height:56px">${esc(planState.feedback)}</textarea></div>
+    <div class="btn-row">
+      <button class="btn primary" data-action="plan-adopt" ${loading ? 'disabled' : ''}>采纳所选</button>
+      <button class="btn" data-action="plan-adjust" ${loading ? 'disabled' : ''}>${loading ? '<span class="spinner"></span> 调整中…' : '✦ 按我的话调整'}</button>
+      <button class="btn ghost small" data-action="plan-ai" ${loading ? 'disabled' : ''}>重新生成</button>
     </div>`;
+  } else if (loading) {
+    body = `<div class="ai-card"><div class="ai-tag">✦ 正在分解</div>
+      <div class="small" style="color:var(--ink-2)"><span class="spinner"></span> 正在从你的目标、本周要事、昨日未完成与作息，分解出今天的草案…（深度思考约需十几秒）</div></div>`;
+  } else if (hasKey()) {
+    body = `<div class="field"><label>可以先说点什么（也可以留空，AI 直接从目标分解）</label>
+      <textarea data-change="plan-feedback" placeholder="固定日程（几点开会）、今天的状态、特别想做的事…" style="min-height:72px">${esc(planState.feedback)}</textarea></div>
+    <div class="btn-row">
+      <button class="btn primary" data-action="plan-ai">✦ 生成今日草案</button>
+      <button class="btn" data-action="plan-manual">手动添加</button>
+    </div>`;
+  } else {
+    body = `${aiGate('plan-day', '')}<div class="btn-row mt8"><button class="btn" data-action="plan-manual">手动添加</button></div>`;
   }
-  return `<h2>计划今天</h2><div class="modal-sub">把脑子里的事倒出来，AI 结合你的目标、本周要事和作息来安排</div>
-  <div class="field"><textarea data-change="plan-dump" placeholder="今天要做什么？有什么固定日程（几点开会）？状态如何？都可以写，也可以留空直接生成。" style="min-height:96px">${esc(planState.dump)}</textarea></div>
+
+  return `<h2>计划今天</h2><div class="modal-sub">AI 先从上层目标分解草案 → 你一句话调整 → 采纳。你已有的任务不会被动过。</div>
   ${planState.error ? `<div class="ai-error">${esc(planState.error)}</div>` : ''}
-  ${proposalHTML}
-  ${!p ? `<div class="btn-row">
-    ${hasKey()
-      ? `<button class="btn primary" data-action="plan-ai" ${planState.loading ? 'disabled' : ''}>${planState.loading ? '<span class="spinner"></span> 正在深度思考安排…' : '✦ AI 帮我安排'}</button>`
-      : ''}
-    <button class="btn" data-action="plan-manual">手动添加</button>
-  </div>${hasKey() ? '' : aiGate('plan-day', '')}` : ''}
-  ${hasKey() ? ctxPreview(planDayPrompt(planState.dump)) : ''}
+  ${body}
+  ${hasKey() ? ctxPreview(planDayPrompt(planState.feedback || '')) : ''}
   <div class="modal-actions"><button class="btn ghost" data-action="modal-close">关闭</button></div>`;
+}
+
+// ----- 一句话 → 变更预览 -----
+
+function nlPreviewModal() {
+  const r = nlPreview;
+  if (!r) return '';
+  const rows = r.plans.map((p, i) => p.ok
+    ? `<div class="ai-item">
+        <input type="checkbox" data-change="nl-check" data-idx="${i}" ${r.checked[i] !== false ? 'checked' : ''}>
+        <div><div class="ai-item-title">${esc(p.text)}</div></div>
+      </div>`
+    : `<div class="ai-item"><div><div class="ai-item-title" style="color:var(--muted)">✕ ${esc(p.text)}</div></div></div>`).join('');
+  const selCount = r.plans.filter((p, i) => p.ok && r.checked[i] !== false).length;
+  return `<h2>确认修改</h2>
+  ${r.summary ? `<div class="modal-sub">${esc(r.summary)}</div>` : ''}
+  ${rows ? `<div class="ai-card"><div class="ai-tag">✦ 将要执行</div>${rows}</div>` : ''}
+  ${r.clarification ? `<div class="ai-card"><div class="ai-tag">✦ 教练想确认</div>
+    <div style="font-size:14px">${esc(r.clarification)}</div>
+    <div class="quick-add" style="margin-top:10px;padding:0;border:none">
+      <input type="text" id="nl-answer-input" placeholder="回答后回车继续" data-enter="nl-answer" ${r.loading ? 'disabled' : ''}>
+      <button class="btn small" data-action="nl-answer" ${r.loading ? 'disabled' : ''}>${r.loading ? '<span class="spinner"></span>' : '继续'}</button>
+    </div></div>` : ''}
+  ${r.error ? `<div class="ai-error">${esc(r.error)}</div>` : ''}
+  <div class="modal-actions">
+    <button class="btn ghost" data-action="modal-close">取消</button>
+    ${selCount ? `<button class="btn primary" data-action="nl-apply" ${r.loading ? 'disabled' : ''}>应用 ${selCount} 项</button>` : ''}
+  </div>`;
 }
 
 // ----- task edit -----
@@ -821,16 +938,22 @@ function wizardModal() {
       const g = sg.goalId ? goalById(sg.goalId) : null;
       return `<button class="suggest-chip" data-action="wiz-pick" data-idx="${i}" title="${esc(sg.reason || '')}">＋ ${esc(sg.title)}${g ? ` <span class="muted">· ${esc(g.title)}</span>` : ''}</button>`;
     }).join('');
-    return `<h2>每周规划 · 本周要事</h2><div class="modal-sub">3-5 件，每件是本周结束时「可检验的结果」</div>${stepsBar}
-    <div class="task-list">${chosen || '<div class="empty">还没选，从下面的建议里挑，或手动添加</div>'}</div>
+    return `<h2>每周规划 · 本周要事</h2><div class="modal-sub">AI 从目标与里程碑分解建议 → 你一句话调整 → 点「＋」挑进本周。已选的不会被动过。</div>${stepsBar}
+    <div class="task-list">${chosen || '<div class="empty">还没选：从下面 AI 建议里点「＋」挑，或手动添加</div>'}</div>
     <div class="quick-add" style="margin-top:8px"><input type="text" placeholder="手动添加一件要事，回车确认" data-enter="wiz-manual-add"></div>
-    <div class="field mt12"><label>建议来源</label>
+    <div class="field mt12"><label>AI 建议（点「＋」加入本周）</label>
       ${w.sugError ? `<div class="ai-error">${esc(w.sugError)}</div>` : ''}
-      <div>${sugs || '<span class="muted small">点下方按钮获取建议</span>'}</div>
+      ${w.sugLoading && !sugs ? `<div class="small" style="color:var(--ink-2)"><span class="spinner"></span> 正在从目标与里程碑分解本周要事…</div>` : ''}
+      ${w.rationale && sugs ? `<div class="ai-rationale" style="margin-bottom:6px">${esc(w.rationale)}</div>` : ''}
+      <div>${sugs || (w.sugLoading ? '' : '<span class="muted small">点下方按钮获取建议</span>')}</div>
       <div class="btn-row mt8">
-        ${hasKey() ? `<button class="btn small" data-action="wiz-ai-suggest" ${w.sugLoading ? 'disabled' : ''}>${w.sugLoading ? '<span class="spinner"></span> 思考中…' : '✦ AI 建议本周要事'}</button>` : `<button class="btn small ghost" data-action="copy-prompt" data-purpose="plan-week">复制上下文给 AI</button>`}
+        ${hasKey() ? `<button class="btn small" data-action="wiz-ai-suggest" ${w.sugLoading ? 'disabled' : ''}>${w.sugLoading ? '<span class="spinner"></span> 思考中…' : sugs ? '↻ 重新生成' : '✦ AI 建议本周要事'}</button>` : `<button class="btn small ghost" data-action="copy-prompt" data-purpose="plan-week">复制上下文给 AI</button>`}
         <button class="btn small ghost" data-action="wiz-local-suggest">用上周未完成 + 收集箱</button>
-      </div></div>
+      </div>
+      ${hasKey() && sugs ? `<div class="field mt8" style="margin-bottom:0"><label>对建议不满意？直接说</label>
+        <textarea data-change="wiz-feedback" placeholder="例：MVP 那条太大，拆小一点；再加一条恢复跑步；健康类只留一条" style="min-height:44px">${esc(w.feedback || '')}</textarea>
+        <div class="btn-row mt8"><button class="btn small" data-action="wiz-ai-adjust" ${w.sugLoading ? 'disabled' : ''}>${w.sugLoading ? '<span class="spinner"></span> 调整中…' : '✦ 按我的话调整'}</button></div></div>` : ''}
+    </div>
     <div class="modal-actions">
       <button class="btn ghost left" data-action="wiz-back">上一步</button>
       <button class="btn ghost" data-action="modal-close">取消</button>
@@ -912,6 +1035,7 @@ export const Actions = {
 
   // --- settings ---
   'set-effort': (el) => { update((s) => { s.settings.effort = el.dataset.id; }); refreshModal(); },
+  'set-autoai': (el) => { update((s) => { s.settings.autoAI = el.dataset.id === 'on'; }); refreshModal(); },
   'set-theme': (el) => {
     update((s) => { s.settings.theme = el.dataset.id; });
     applyTheme(); refreshModal();
@@ -996,11 +1120,92 @@ export const Actions = {
     focusQuickAdd = true; render();
   },
   'toggle-task': (el) => {
+    // 若正在给这件事计时，先停表把实际用时记进去，再标记完成
+    if (state.timer?.taskId === el.dataset.id) {
+      const r = stopTimer();
+      if (r) toast(`「${r.task.title}」记入 ${r.minutes} 分钟`);
+    }
     update(() => {
       const t = state.days[el.dataset.day]?.tasks.find((x) => x.id === el.dataset.id);
       if (t) t.done = !t.done;
     });
     render();
+  },
+
+  // --- 计时 ---
+  'timer-start': (el) => {
+    startTimer(el.dataset.day, el.dataset.id);
+    render();
+  },
+  'timer-stop': () => {
+    const r = stopTimer();
+    if (r) toast(`「${r.task.title}」记入 ${r.minutes} 分钟`);
+    render();
+  },
+
+  // --- 一句话指令 ---
+  'nl-submit': async () => {
+    const inp = $('.nl-bar input');
+    const text = (inp?.value || nlState.text).trim();
+    if (!text || nlState.loading) return;
+    nlState = { text, loading: true, error: null };
+    render();
+    try {
+      const r = await aiApply(text);
+      nlPreview = {
+        sentence: text, summary: r.summary, clarification: r.clarification || null,
+        plans: planOps(r.ops), checked: {}, loading: false, error: null,
+      };
+      nlState = { text: '', loading: false, error: null };
+      openModal(nlPreviewModal, () => $('#nl-answer-input')?.focus());
+    } catch (e) {
+      if (e.name !== 'AbortError') nlState = { text, loading: false, error: e.message };
+      else nlState = { text, loading: false, error: null };
+    }
+    render();
+  },
+  'nl-answer': async () => {
+    const v = $('#nl-answer-input')?.value.trim();
+    if (!v || !nlPreview || nlPreview.loading) return;
+    nlPreview.loading = true; nlPreview.error = null;
+    refreshModal();
+    try {
+      const combined = `${nlPreview.sentence}\n（对你的问题「${nlPreview.clarification}」的回答：${v}）`;
+      const r = await aiApply(combined);
+      nlPreview = {
+        sentence: combined, summary: r.summary, clarification: r.clarification || null,
+        plans: planOps(r.ops), checked: {}, loading: false, error: null,
+      };
+    } catch (e) {
+      nlPreview.loading = false;
+      if (e.name !== 'AbortError') nlPreview.error = e.message;
+    }
+    refreshModal();
+  },
+  'nl-apply': () => {
+    const r = nlPreview;
+    if (!r) return;
+    const ops = r.plans.filter((p, i) => p.ok && r.checked[i] !== false).map((p) => p.op);
+    if (!ops.length) return;
+    lastSnapshot = snapshot();
+    const { applied, skipped } = applyOps(ops);
+    closeModal(); nlPreview = null; render();
+    toast(`已应用 ${applied.length} 项${skipped.length ? `，跳过 ${skipped.length} 项` : ''}`, { label: '撤销', action: 'undo-apply', ms: 8000 });
+  },
+  'undo-apply': (el) => {
+    if (!lastSnapshot) { toast('没有可撤销的修改'); return; }
+    restoreSnapshot(lastSnapshot);
+    lastSnapshot = null;
+    el?.closest('.toast')?.remove();
+    render(); toast('已撤销');
+  },
+
+  // --- 教练观察 ---
+  'brief-refresh': async () => {
+    if (briefLoading) return;
+    briefLoading = true; render();
+    await refreshBrief();
+    briefLoading = false; render();
   },
   'toggle-mit': (el) => {
     const day = state.days[el.dataset.day];
@@ -1044,14 +1249,26 @@ export const Actions = {
 
   // --- plan day ---
   'plan-open': () => {
-    planState = { dump: '', loading: false, error: null, proposal: null, checked: {} };
+    planState = { feedback: '', loading: false, error: null, proposal: null, checked: {} };
     openModal(planModal, () => $('.modal textarea')?.focus());
+    // 有 Key 就立刻开始分解：AI 先给草案，用户再用一段话调整
+    if (hasKey()) Actions['plan-ai']();
   },
   'plan-ai': () => withAI(planState, refreshModal, async () => {
     planState.proposal = null;
-    const plan = await aiPlanDay(planState.dump);
+    const plan = await aiPlanDay(planState.feedback || '');
     planState.proposal = plan;
     planState.checked = {};
+    planState.feedback = '';
+  }),
+  // 带上一轮草案 + 用户的一段话 → 最小调整
+  'plan-adjust': () => withAI(planState, refreshModal, async () => {
+    if (!planState.proposal) return;
+    const prior = priorDayText(planState.proposal);
+    const plan = await aiPlanDay(planState.feedback || '', prior);
+    planState.proposal = plan;
+    planState.checked = {};
+    planState.feedback = '';
   }),
   'plan-adopt': () => {
     const p = planState.proposal;
@@ -1082,6 +1299,8 @@ export const Actions = {
   'review-day-done': () => {
     update(() => { ensureDay(todayKey()).reviewedAt = Date.now(); });
     render(); toast(`复盘完成，连续 ${reviewStreak()} 天`);
+    // 后台自动请教练点评（完成后随 update 自动重绘出现）
+    if (hasKey() && state.settings.autoAI !== false) autoComment();
   },
   'review-reopen': () => {
     update(() => { ensureDay(todayKey()).reviewedAt = null; });
@@ -1098,6 +1317,7 @@ export const Actions = {
   'task-mit': () => mutTask((t) => { t.mit = !t.mit; }),
   'task-est-quick': (el) => mutTask((t) => { t.estMin = Number(el.dataset.min); }),
   'task-del': () => {
+    if (state.timer?.taskId === editTask.id) stopTimer();
     update(() => {
       const day = state.days[editTask.day];
       if (day) day.tasks = day.tasks.filter((x) => x.id !== editTask.id);
@@ -1148,12 +1368,16 @@ export const Actions = {
       chosen: existing?.priorities?.map((p) => ({ title: p.title, goalId: p.goalId })) || [],
       suggestions: [], sugLoading: false, sugError: null,
       budgets: { ...(existing?.budgets || {}) },
-      rationale: '',
+      rationale: '', feedback: '',
     };
     if (!Object.keys(wiz.budgets).length) {
       for (const g of activeGoals()) if (g.weeklyBudgetHours) wiz.budgets[g.id] = g.weeklyBudgetHours;
     }
+    // 上周没数据会直接跳到第 2 步：此时立刻让 AI 从目标分解本周要事
+    const lastSt = weekStats(lastWk);
+    const hasLast = lastSt.tasksTotal > 0 || state.weeks[lastWk]?.plannedAt;
     openModal(wizardModal);
+    if (!hasLast && hasKey() && !wiz.suggestions.length) Actions['wiz-ai-suggest']();
   },
   'wiz-back': () => { wiz.step = Math.max(1, wiz.step - 1); refreshModal(); },
   'wiz-next': () => {
@@ -1161,14 +1385,29 @@ export const Actions = {
       update(() => { ensureWeek(wiz.lastWk).review = { summary: wiz.summary.trim(), reviewedAt: Date.now() }; });
     }
     wiz.step = Math.min(3, wiz.step + 1); refreshModal();
+    // 进入第 2 步时自动分解（AI 先给，人再调）
+    if (wiz.step === 2 && hasKey() && !wiz.suggestions.length && !wiz.sugLoading) Actions['wiz-ai-suggest']();
   },
   'wiz-ai-summary': () => withAI({ set loading(v) { wiz.sumLoading = v; }, set error(v) { wiz.sumError = v; } }, refreshModal, async () => {
     wiz.summary = (await aiWeekSummary(weekContextFor(wiz.lastWk))).trim();
   }),
   'wiz-ai-suggest': () => withAI({ set loading(v) { wiz.sugLoading = v; }, set error(v) { wiz.sugError = v; } }, refreshModal, async () => {
-    const plan = await aiPlanWeek();
+    const plan = await aiPlanWeek(wiz.feedback || '');
     wiz.suggestions = plan.priorities;
     wiz.rationale = plan.rationale;
+    wiz.feedback = '';
+  }),
+  // 带当前建议草案 + 用户的一段话 → 最小调整（已挑进本周的不动）
+  'wiz-ai-adjust': () => withAI({ set loading(v) { wiz.sugLoading = v; }, set error(v) { wiz.sugError = v; } }, refreshModal, async () => {
+    const prior = [
+      ...wiz.chosen.map((c) => `已选定（不要改动）：${c.title}`),
+      ...(wiz.suggestions || []).map((s) => `- ${s.title}${s.goalId && goalById(s.goalId) ? `（${goalById(s.goalId).title}）` : ''}${s.reason ? `：${s.reason}` : ''}`),
+      wiz.rationale ? `草案思路：${wiz.rationale}` : null,
+    ].filter(Boolean).join('\n');
+    const plan = await aiPlanWeek(wiz.feedback || '', prior);
+    wiz.suggestions = plan.priorities;
+    wiz.rationale = plan.rationale;
+    wiz.feedback = '';
   }),
   'wiz-local-suggest': () => {
     const sugs = [];
@@ -1320,7 +1559,7 @@ export const Actions = {
   'copy-prompt': async (el) => {
     const purpose = el.dataset.purpose;
     let text;
-    if (purpose === 'plan-day') text = planDayPrompt(planState?.dump || '');
+    if (purpose === 'plan-day') text = planDayPrompt(planState?.feedback || '');
     else if (purpose === 'plan-week') text = planWeekPrompt();
     else if (purpose === 'insight') text = insightPrompt();
     else if (purpose === 'review-day') text = reviewDayPrompt(state.days[todayKey()]?.reflection || '');
@@ -1348,8 +1587,10 @@ export const Changes = {
   'set-exercise': (el) => update((s) => { s.profile.exercise = el.value; }),
   'set-principles': (el) => update((s) => { s.profile.principles = el.value; }),
   'set-reflection': (el) => update(() => { ensureDay(el.dataset.day).reflection = el.value; }),
-  'plan-dump': (el) => { planState.dump = el.value; },
+  'plan-feedback': (el) => { planState.feedback = el.value; },
   'plan-check': (el) => { planState.checked[el.dataset.key] = el.checked; },
+  'nl-check': (el) => { if (nlPreview) { nlPreview.checked[Number(el.dataset.idx)] = el.checked; refreshModal(); } },
+  'wiz-feedback': (el) => { wiz.feedback = el.value; },
   'task-title': (el) => mutTask((t) => { t.title = el.value.trim() || t.title; }),
   'task-goal': (el) => mutTask((t) => { t.goalId = el.value || null; }),
   'task-block': (el) => mutTask((t) => { t.blockStart = el.value || null; }),

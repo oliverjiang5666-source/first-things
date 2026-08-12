@@ -12,6 +12,8 @@ import {
 const BUDGET_CHARS = 9000;
 
 const hours = (min) => (min / 60).toFixed(1).replace(/\.0$/, '');
+// 短 id：取末 8 位（uuid 与回退 id 的末 8 位都是随机段），AI 引用时用 endsWith 反查
+const sid = (id) => String(id).slice(-8);
 
 function nowLine() {
   const d = nowBeijing();
@@ -32,7 +34,7 @@ function profileSection() {
   return lines.join('\n\n');
 }
 
-function goalsSection() {
+function goalsSection(withIds = false) {
   const goals = activeGoals();
   if (!goals.length) return '【目标清单】（还没有目标）';
   const twk = thisWeekKey();
@@ -42,26 +44,28 @@ function goalsSection() {
     const parts = [`- [id:${g.id}] ${g.title}（${g.area}·${g.horizon}${g.weeklyBudgetHours ? `，预算 ${g.weeklyBudgetHours}h/周` : ''}）`];
     if (g.why) parts.push(`  为什么重要：${g.why}`);
     const ms = currentMilestone(g);
-    if (ms) parts.push(`  当前里程碑：${ms.title}（已完成 ${g.milestones.filter((m) => m.done).length}/${g.milestones.length} 个里程碑）`);
+    if (ms) parts.push(`  当前里程碑：${withIds ? `[m:${sid(ms.id)}] ` : ''}${ms.title}（已完成 ${g.milestones.filter((m) => m.done).length}/${g.milestones.length} 个里程碑）`);
     parts.push(`  投入：本周 ${hours(thisMin[g.id] || 0)}h，上周 ${hours(lastMin[g.id] || 0)}h`);
     return parts.join('\n');
   });
   return `【目标清单】（进行中）\n${lines.join('\n')}`;
 }
 
-function taskLine(t) {
+function taskLine(t, withIds = false) {
   const g = t.goalId ? goalById(t.goalId) : null;
-  const bits = [t.done ? '[完成]' : '[待办]', t.title];
+  const bits = [t.done ? '[完成]' : '[待办]'];
+  if (withIds) bits.push(`[t:${sid(t.id)}]`);
+  bits.push(t.title);
   const meta = [];
   if (g) meta.push(`目标:${g.title}`);
   meta.push(QUAD_LABEL[quadrantOf(t)]);
   if (t.blockStart) meta.push(`${t.blockStart}起`);
-  meta.push(`${taskMinutes(t)}分`);
+  meta.push(t.actMin != null ? `实际 ${t.actMin} 分（预计 ${t.estMin ?? 30} 分）` : `预计 ${taskMinutes(t)} 分`);
   if (t.mit) meta.push('今日要事');
   return `  - ${bits.join(' ')}（${meta.join('，')}）`;
 }
 
-function weekSection() {
+function weekSection(withIds = false) {
   const twk = thisWeekKey();
   const wk = state.weeks[twk];
   const head = `【本周计划】${weekLabel(twk)}`;
@@ -69,7 +73,7 @@ function weekSection() {
   const st = weekStats(twk);
   const lines = wk.priorities.map((p) => {
     const g = p.goalId ? goalById(p.goalId) : null;
-    return `  - ${p.done ? '[完成]' : '[进行]'} ${p.title}${g ? `（${g.title}）` : ''}`;
+    return `  - ${p.done ? '[完成]' : '[进行]'} ${withIds ? `[p:${sid(p.id)}] ` : ''}${p.title}${g ? `（${g.title}）` : ''}`;
   });
   const budget = Object.entries(wk.budgets || {})
     .map(([gid, h]) => {
@@ -84,23 +88,31 @@ function weekSection() {
 }
 
 function todaySection(purpose) {
+  const withIds = purpose === 'apply';
   const tk = todayKey();
   const day = state.days[tk];
-  const lines = [`【今天】${fmtDay(tk)}`];
+  const lines = [`【今天】${fmtDay(tk)}（date=${tk}）`];
   if (!day || !day.tasks.length) lines.push('（今天还没有任务）');
   else {
-    for (const t of day.tasks) if (!t.dropped) lines.push(taskLine(t));
+    for (const t of day.tasks) if (!t.dropped) lines.push(taskLine(t, withIds));
     if (day.reflection) lines.push(`今日反思：${day.reflection}`);
   }
-  if (purpose === 'plan-day' || purpose === 'plan-week') {
+  if (state.timer) {
+    const cur = state.days[state.timer.day]?.tasks.find((t) => t.id === state.timer.taskId);
+    if (cur) {
+      const min = Math.max(0, Math.round((Date.now() - state.timer.startedAt) / 60000));
+      lines.push(`【正在进行】「${cur.title}」计时中，已 ${min} 分钟`);
+    }
+  }
+  if (purpose === 'plan-day' || purpose === 'plan-week' || withIds) {
     const un = unfinishedYesterday();
     if (un.tasks.length) {
-      lines.push(`【昨天未完成】`);
-      for (const t of un.tasks) lines.push(`  - ${t.title}${t.goalId && goalById(t.goalId) ? `（${goalById(t.goalId).title}）` : ''}`);
+      lines.push(`【昨天未完成】（date=${un.key}）`);
+      for (const t of un.tasks) lines.push(withIds ? taskLine(t, true) : `  - ${t.title}${t.goalId && goalById(t.goalId) ? `（${goalById(t.goalId).title}）` : ''}`);
     }
     if (state.inbox.length) {
       lines.push(`【收集箱】（未整理的想法）`);
-      for (const it of state.inbox.slice(0, 12)) lines.push(`  - ${it.title}`);
+      for (const it of state.inbox.slice(0, 12)) lines.push(`  - ${withIds ? `[i:${sid(it.id)}] ` : ''}${it.title}`);
     }
   }
   return lines.join('\n');
@@ -163,9 +175,13 @@ function lastInsightSection() {
 // Assemble under a char budget. Sections are ordered by importance;
 // when over budget we drop from the tail (oldest, most-compressed tiers first).
 export function buildContext(purpose = 'chat') {
-  const core = [nowLine(), profileSection(), goalsSection(), weekSection(), todaySection(purpose), signalsSection()]
+  const withIds = purpose === 'apply';
+  const core = [nowLine(), profileSection(), goalsSection(withIds), weekSection(withIds), todaySection(purpose), signalsSection()]
     .filter(Boolean);
-  let optional = [recentDaysSection(7), lastInsightSection(), weeklyReviewsSection(4), monthsSection(2)].filter(Boolean);
+  // apply/brief 是高频轻调用：只给核心现状，不带历史层（快、省，也足够判断）
+  let optional = (purpose === 'apply' || purpose === 'brief')
+    ? []
+    : [recentDaysSection(7), lastInsightSection(), weeklyReviewsSection(4), monthsSection(2)].filter(Boolean);
 
   let text = [...core, ...optional].join('\n\n');
   while (text.length > BUDGET_CHARS && optional.length) {

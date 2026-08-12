@@ -19,7 +19,10 @@ export function defaultState() {
     days: {},    // "2026-08-11" -> { tasks:[...], reflection, aiComment, plannedAt, reviewedAt }
     months: {},  // "2026-08" -> { review:{summary,reviewedAt} }
     inbox: [],   // [{id,title,createdAt}]
-    settings: { apiKey: '', model: 'openai/gpt-5.6-sol', effort: 'max', theme: 'auto', lastExportAt: null },
+    settings: { apiKey: '', model: 'openai/gpt-5.6-sol', effort: 'max', theme: 'auto', lastExportAt: null, autoAI: true },
+    // 后台智能的工作区：观察卡 + 自动洞察的节流记录
+    assistant: { brief: null, briefHash: '', briefDate: '', briefCount: 0, insightAutoAt: 0 },
+    timer: null, // {day, taskId, startedAt} —— 全局同时只有一个任务在计时
   };
 }
 
@@ -46,6 +49,8 @@ function migrate(s) {
   if (!['max', 'xhigh', 'high', 'medium', 'low'].includes(s.settings.effort)) s.settings.effort = d.settings.effort;
   s.goals = s.goals || []; s.weeks = s.weeks || {}; s.days = s.days || {};
   s.months = s.months || {}; s.inbox = s.inbox || [];
+  s.assistant = { ...d.assistant, ...(s.assistant || {}) };
+  s.timer = s.timer || null;
   for (const g of s.goals) { g.milestones = g.milestones || []; }
   return s;
 }
@@ -264,6 +269,45 @@ export function unfinishedYesterday() {
   const day = state.days[yk];
   if (!day) return { key: yk, tasks: [] };
   return { key: yk, tasks: day.tasks.filter((t) => !t.done && !t.carried && !t.dropped) };
+}
+
+// ---------- task timer ----------
+// 单一计时器：同一时刻只对一个任务计时；startedAt 是绝对时间戳，跨刷新仍在走。
+
+export function timerElapsedMin() {
+  if (!state.timer) return 0;
+  return Math.max(0, Math.round((Date.now() - state.timer.startedAt) / 60000));
+}
+
+// 把正在计时的时长结算进任务 actMin（在某次 update 的 mutation 内调用）
+export function settleTimer(s) {
+  const tm = s.timer;
+  if (!tm) return null;
+  s.timer = null;
+  const task = s.days[tm.day]?.tasks.find((t) => t.id === tm.taskId);
+  if (!task) return null;
+  const min = Math.max(1, Math.round((Date.now() - tm.startedAt) / 60000));
+  task.actMin = (task.actMin || 0) + min;
+  return { task, minutes: min };
+}
+
+export function startTimer(day, taskId) {
+  update((s) => { settleTimer(s); s.timer = { day, taskId, startedAt: Date.now() }; });
+}
+
+export function stopTimer() {
+  let result = null;
+  update((s) => { result = settleTimer(s); });
+  return result;
+}
+
+// ---------- snapshot（AI 批量修改的单步撤销） ----------
+
+export function snapshot() { return JSON.stringify(state); }
+
+export function restoreSnapshot(json) {
+  state = migrate(JSON.parse(json));
+  update();
 }
 
 // ---------- behavior signals (local, deterministic, free) ----------
