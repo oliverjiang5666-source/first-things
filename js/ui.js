@@ -165,7 +165,7 @@ function renderToday() {
     if (state.profile.wake) rows.push(`<div class="tl-row anchor"><span class="tl-time">${state.profile.wake}</span><span>起床</span></div>`);
     for (const t of blocked) {
       const g = t.goalId ? goalById(t.goalId) : null;
-      rows.push(`<div class="tl-row ${t.done ? 'done' : ''}" data-action="open-task" data-id="${t.id}" data-day="${tk}">
+      rows.push(`<div class="tl-row ${t.done ? 'done' : ''}" data-action="open-task" data-id="${t.id}" data-day="${tk}"${g ? ` title="目标：${esc(g.title)}"` : ''}>
         <span class="tl-time">${t.blockStart}</span>
         ${g ? `<span class="dot" style="--gc:${goalColor(g)};background:${goalColor(g)}"></span>` : ''}
         <span class="tl-title">${esc(t.title)}</span>
@@ -191,7 +191,7 @@ function renderToday() {
     html += `<div class="empty"><div class="empty-title">今天还没有任务</div>点右下输入框直接添加，或用「计划今天」</div>`;
   }
   html += `<div class="quick-add"><input type="text" placeholder="添加任务，回车确认" data-enter="qa-add">
-    ${day?.plannedAt ? '' : tasks.length ? `<button class="btn small" data-action="plan-open">☀ AI 安排</button>` : ''}</div></div>`;
+    <button class="btn small" data-action="plan-open" title="让 AI 结合目标与作息安排今天">☀ AI 安排</button></div></div>`;
 
   // 晚间复盘
   html += reviewDayCard(tk);
@@ -1058,17 +1058,18 @@ export const Actions = {
     if (!p) return;
     update(() => {
       const day = ensureDay(todayKey());
+      const exists = (title) => day.tasks.some((t) => !t.dropped && t.title.trim() === title.trim());
       const existingMits = day.tasks.filter((t) => t.mit && !t.done && !t.dropped).length;
       let mitCount = existingMits;
       p.mits.forEach((t, i) => {
-        if (planState.checked[`mits-${i}`] === false) return;
+        if (planState.checked[`mits-${i}`] === false || exists(t.title)) return;
         day.tasks.push(newTask(t.title, {
           goalId: t.goalId, estMin: t.estMin || 30, blockStart: t.blockStart,
           mit: mitCount < 3 ? (mitCount++, true) : false,
         }));
       });
       p.others.forEach((t, i) => {
-        if (planState.checked[`others-${i}`] === false) return;
+        if (planState.checked[`others-${i}`] === false || exists(t.title)) return;
         day.tasks.push(newTask(t.title, { goalId: t.goalId, estMin: t.estMin || 30, blockStart: t.blockStart }));
       });
       day.plannedAt = Date.now();

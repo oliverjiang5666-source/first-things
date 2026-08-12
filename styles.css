@@ -9,7 +9,7 @@
   --muted: #8B887C;
   --line: #E5E2D8;
   --line-soft: #EFEDE4;
-  --accent: #0E7A65;        /* Q2 —— 重要不紧急，也是品牌色 */
+  --accent: #067F64;        /* Q2 —— 重要不紧急，也是品牌色（色度 ≥0.10，通过 dataviz 校验） */
   --accent-ink: #0A5F4F;
   --accent-soft: #E2EFEA;
   --q1: #C2492F;
@@ -19,7 +19,8 @@
   --shadow: 0 1px 2px rgba(35, 33, 28, .05), 0 4px 16px rgba(35, 33, 28, .04);
   --shadow-lg: 0 8px 40px rgba(35, 33, 28, .14);
   --radius: 14px;
-  --g0: #3D7AB8; --g1: #C2703E; --g2: #7B6BB8; --g3: #6B8F3D; --g4: #A8578B; --g5: #B85252;
+  /* 目标类别色：采用经 CVD 校验的参考色槽（相邻对 ΔE≥8，前三槽全配对通过） */
+  --g0: #2a78d6; --g1: #eb6834; --g2: #1baf7a; --g3: #eda100; --g4: #e87ba4; --g5: #008300;
 }
 
 html[data-theme="dark"] {
@@ -40,7 +41,7 @@ html[data-theme="dark"] {
   --danger: #D96A52;
   --shadow: 0 1px 2px rgba(0, 0, 0, .3);
   --shadow-lg: 0 8px 40px rgba(0, 0, 0, .5);
-  --g0: #5E96CE; --g1: #D18A57; --g2: #9687CE; --g3: #86A95B; --g4: #C0719F; --g5: #CE6E6E;
+  --g0: #3987e5; --g1: #d95926; --g2: #199e70; --g3: #c98500; --g4: #d55181; --g5: #008300;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -62,7 +63,7 @@ html[data-theme="dark"] {
     --danger: #D96A52;
     --shadow: 0 1px 2px rgba(0, 0, 0, .3);
     --shadow-lg: 0 8px 40px rgba(0, 0, 0, .5);
-    --g0: #5E96CE; --g1: #D18A57; --g2: #9687CE; --g3: #86A95B; --g4: #C0719F; --g5: #CE6E6E;
+    --g0: #3987e5; --g1: #d95926; --g2: #199e70; --g3: #c98500; --g4: #d55181; --g5: #008300;
   }
 }
 

@@ -1,2 +1,5 @@
-.DS_Store
+# 本地密钥配置——绝不提交
 js/config.local.js
+
+.DS_Store
+Thumbs.db
