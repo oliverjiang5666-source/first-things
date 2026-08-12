@@ -1,6 +1,6 @@
 // ============ boot & event delegation ============
 
-import { state, update, subscribe, todayKey } from './store.js';
+import { state, updateQuiet, subscribe, todayKey } from './store.js';
 import { render, Actions, Changes, applyTheme, toast } from './ui.js';
 import { init as initAuto } from './auto.js';
 import { initSync, schedulePush } from './sync.js';
@@ -11,10 +11,10 @@ import { initSync, schedulePush } from './sync.js';
 try {
   const local = (await import('./config.local.js')).default || {};
   if (local.apiKey && !state.settings.apiKey) {
-    update((s) => { s.settings.apiKey = local.apiKey; });
+    updateQuiet((s) => { s.settings.apiKey = local.apiKey; });
   }
   if (local.model && !localStorage.getItem('yaoshi.v1')) {
-    update((s) => { s.settings.model = local.model; });
+    updateQuiet((s) => { s.settings.model = local.model; });
   }
 } catch { /* 没有本地配置文件——正常 */ }
 
@@ -25,11 +25,14 @@ try {
   const hp = new URLSearchParams(location.hash.slice(1));
   const hk = hp.get('k');
   const gt = hp.get('gt');
+  const gr = hp.get('gr');
   const wrote = [];
   if (hk && hk.startsWith('sk-') && state.settings.apiKey !== hk) wrote.push((s) => { s.settings.apiKey = hk; });
   if (gt && /^(github_pat_|ghp_)/.test(gt) && state.settings.ghToken !== gt) wrote.push((s) => { s.settings.ghToken = gt; });
-  if (wrote.length) update((s) => wrote.forEach((w) => w(s)));
-  if (hk || gt) history.replaceState(null, '', location.pathname + location.search);
+  if (gr && /^[\w.-]+\/[\w.-]+$/.test(gr) && state.settings.ghRepo !== gr) wrote.push((s) => { s.settings.ghRepo = gr; });
+  // 密钥不参与同步，静默写入（不盖 syncStamp）：新设备开快捷方式不能显得「比云端新」
+  if (wrote.length) updateQuiet((s) => wrote.forEach((w) => w(s)));
+  if (hk || gt || gr) history.replaceState(null, '', location.pathname + location.search);
 } catch { /* hash 解析失败就当没有 */ }
 
 applyTheme();

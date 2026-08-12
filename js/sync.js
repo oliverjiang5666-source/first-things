@@ -102,7 +102,7 @@ async function pull() {
   setStatus('syncing');
   try {
     const res = await gh(`/repos/${c.repo}/contents/${FILE}?t=${Date.now()}`, { cache: 'no-store' });
-    if (res.status === 404) { setStatus('ok'); return push(); } // 首次：云端还没有文件
+    if (res.status === 404) { sha = null; setStatus('ok'); return push(); } // 首次：云端还没有文件（sha 必须清掉，否则带旧 sha 推会 422 死循环）
     if (res.status === 401 || res.status === 403) { setStatus('error', '令牌无效或过期：去 GitHub 重新生成，粘到设置里'); return; }
     if (!res.ok) { setStatus('error', `读取云端失败（HTTP ${res.status}）`); return; }
     const data = await res.json();
@@ -110,7 +110,14 @@ async function pull() {
     const remote = JSON.parse(b64dec((data.content || '').replace(/\n/g, '')));
     const remoteStamp = remote.syncStamp || 0;
     const localStamp = state.syncStamp || 0;
-    if (remoteStamp > localStamp) adoptRemote(remote);
+    // 本地还是白纸而云端有内容：无条件采纳云端。防住「新设备刚配好钥匙、
+    // 戳比云端新」的情况——否则会把空状态推上去盖掉真数据
+    const localBlank = !state.goals.length && !state.inbox.length
+      && !Object.keys(state.days).length && !Object.keys(state.weeks).length;
+    const remoteHasData = !!(remote.goals?.length || remote.inbox?.length
+      || Object.keys(remote.days || {}).length || Object.keys(remote.weeks || {}).length);
+    if (localBlank && remoteHasData) adoptRemote(remote);
+    else if (remoteStamp > localStamp) adoptRemote(remote);
     else if (localStamp > remoteStamp) { setStatus('ok'); return push(); }
     else setStatus('ok');
   } catch {

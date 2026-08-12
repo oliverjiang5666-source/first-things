@@ -71,6 +71,14 @@ export function update(fn) {
   listeners.forEach((l) => l());
 }
 
+// 静默写入：只动不参与同步的字段（密钥、令牌、仓库名）时用——不盖 syncStamp。
+// 否则新设备刚写完钥匙就「比云端新」，会把一身空状态推上去盖掉真数据。
+export function updateQuiet(fn) {
+  if (fn) fn(state);
+  save();
+  listeners.forEach((l) => l());
+}
+
 // 整包替换本地状态（云端较新时采用远端）：不盖新戳，避免采纳完又把自己当成「更新」推回去
 export function replaceState(s) {
   state = migrate(s);

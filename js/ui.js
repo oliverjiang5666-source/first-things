@@ -1,7 +1,7 @@
 // ============ views, modals, actions ============
 
 import {
-  state, update, uid, newTask, ensureDay, ensureWeek,
+  state, update, updateQuiet, uid, newTask, ensureDay, ensureWeek,
   activeGoals, goalById, goalColor, currentMilestone, quadrantOf, QUAD_LABEL, taskMinutes,
   todayKey, addDays, fmtDay, fmtShort, weekLabel, weekDays, thisWeekKey, shiftWeek, weekStart,
   dayStats, weekStats, weekGoalMinutes, reviewStreak, unfinishedYesterday, hasAnyData,
@@ -1691,8 +1691,8 @@ export const Actions = {
 };
 
 export const Changes = {
-  'set-api-key': (el) => update((s) => { s.settings.apiKey = el.value.trim(); }),
-  'set-ghtoken': (el) => { update((s) => { s.settings.ghToken = el.value.trim(); }); onTokenChange(); refreshModal(); },
+  'set-api-key': (el) => updateQuiet((s) => { s.settings.apiKey = el.value.trim(); }),
+  'set-ghtoken': (el) => { updateQuiet((s) => { s.settings.ghToken = el.value.trim(); }); onTokenChange(); refreshModal(); },
   'set-model': (el) => {
     if (el.value === '__custom') { update((s) => { s.settings.model = ''; }); refreshModal(); }
     else update((s) => { s.settings.model = el.value; });
