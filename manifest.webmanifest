@@ -1,0 +1,13 @@
+{
+  "name": "要事 · First Things",
+  "short_name": "要事",
+  "description": "把时间花在重要的事上——目标 · 每周 · 每天的极简计划系统",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#F6F4EE",
+  "theme_color": "#F6F4EE",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

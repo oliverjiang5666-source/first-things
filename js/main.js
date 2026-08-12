@@ -1,0 +1,67 @@
+// ============ boot & event delegation ============
+
+import { state, update, subscribe, todayKey } from './store.js';
+import { render, Actions, Changes, applyTheme } from './ui.js';
+
+// 本地配置注入：js/config.local.js 在 .gitignore 里，不会进仓库。
+// 在自己电脑上把 API key 写进该文件，就不用每个浏览器手动填一遍；
+// 线上（GitHub Pages）没有这个文件，静默跳过，去「设置」里粘贴即可。
+try {
+  const local = (await import('./config.local.js')).default || {};
+  if (local.apiKey && !state.settings.apiKey) {
+    update((s) => { s.settings.apiKey = local.apiKey; });
+  }
+  if (local.model && !localStorage.getItem('yaoshi.v1')) {
+    update((s) => { s.settings.model = local.model; });
+  }
+} catch { /* 没有本地配置文件——正常 */ }
+
+applyTheme();
+render();
+subscribe(render);
+
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-action]');
+  if (!el) return;
+  const fn = Actions[el.dataset.action];
+  if (fn) fn(el, e);
+});
+
+document.addEventListener('change', (e) => {
+  const el = e.target.closest('[data-change]');
+  if (!el) return;
+  const fn = Changes[el.dataset.change];
+  if (fn) fn(el, e);
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (document.querySelector('.overlay')) Actions['modal-close']();
+    return;
+  }
+  if (e.key !== 'Enter') return;
+  const el = e.target.closest('[data-enter]');
+  if (!el) return;
+  if (el.tagName === 'TEXTAREA' && e.shiftKey) return;
+  e.preventDefault();
+  const fn = Actions[el.dataset.enter];
+  if (fn) fn(el, e);
+});
+
+// re-render when the date rolls over while the app stays open
+let lastDay = todayKey();
+function checkDayChange() {
+  if (todayKey() !== lastDay) {
+    lastDay = todayKey();
+    render();
+  }
+}
+document.addEventListener('visibilitychange', checkDayChange);
+window.addEventListener('focus', checkDayChange);
+setInterval(checkDayChange, 60_000);
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => { /* http or unsupported — fine */ });
+  });
+}
