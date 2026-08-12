@@ -548,3 +548,10 @@ details.ctx-preview pre {
 .coach-ops.undone .coach-op:not(.noline) { text-decoration: line-through; opacity: .55; }
 .coach-undo { margin-top: 4px; align-self: flex-start; border: none; background: none; padding: 0; cursor: pointer; font: inherit; font-size: 13px; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 3px; }
 .coach-undo:hover { color: var(--accent); }
+
+/* ===== v1.4 语音听写：任意文本域旁的麦克风按钮 ===== */
+
+.btn.rec { color: var(--q1); border-color: var(--q1); }
+.btn.rec:hover { background: none; border-color: var(--q1); }
+.rec-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--q1); animation: sparkPulse 1.2s ease-in-out infinite; }
+.chat-input-row .btn { flex-shrink: 0; align-self: flex-end; }

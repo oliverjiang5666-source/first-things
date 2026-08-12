@@ -15,6 +15,7 @@
 //   传输、strict json_schema 与降级链在 ai.js，那边只管「怎么发」。
 
 import { buildContext } from './context.js';
+import { AREAS, HORIZONS } from './store.js';
 
 // ---------- 底座 ----------
 
@@ -55,6 +56,14 @@ const SPECS = {
 规则：
 - 里程碑是可检验的结果并带时间点；第一个里程碑要在 2-4 周内可达成，给用户一个早期胜利。
 - 每周投入小时数要结合用户现有目标与作息给现实数字，不给理想数字。`,
+
+  'goal-capture': `本次职责：目标整理者。用户随口说一段话描述想达成的目标（语音转文字，可能口语化、跳跃、带语气词、有错别字），或对已有目标提出模糊的修改指令；你把它整理成表单可以直接用的完整目标。
+规则：
+- title 一句话、结果导向；why 第一人称，从用户自己说的动机里提炼，不编造。
+- area / horizon 从枚举里选最贴切的；用户没说就按内容和里程碑跨度判断。
+- 里程碑是可检验的结果并带时间点（结合【当前时间】推算具体月份），第一个要在 2-4 周内可达成；weeklyHours 结合用户现有目标与作息给现实数字。
+- firstActions 是本周就能开始的 2-3 个具体动作（每个 30-90 分钟）。
+- 修改模式（给了【现有目标】时）：只改用户提到的部分，没提到的字段原样保留，输出修改后的完整目标。`,
 
   'review-day': `本次职责：晚间复盘教练。
 规则：先指出一个真实的亮点（必须基于数据，不空洞表扬）；有值得注意的模式就点出来；最后给一个明天可直接执行的小建议。全文 2-3 句话，直接输出正文。`,
@@ -146,6 +155,20 @@ export function decomposePrompt(title, why) {
 用户想实现一个长期目标：「${title}」${why ? `\n用户写的理由：${why}` : ''}
 
 请分解这个目标：why 一句话提炼它为什么重要（有用户理由则帮忙精炼）；milestones 3-6 个按时间排列、各带时间点；weeklyHours 每周建议投入；firstActions 本周就能开始的 2-3 个具体动作（每个 30-90 分钟）。`;
+}
+
+// existing：编辑模式下传入现有目标的文字版；null 表示从零口述新目标
+export function captureGoalPrompt(speech, existing = null) {
+  const parts = [buildContext('chat')];
+  if (existing) {
+    parts.push(`【现有目标】（用户要修改它）\n${existing}`);
+    parts.push(`【用户的修改指令】（口述原话）\n${speech.trim()}`);
+    parts.push('请按指令修改，输出修改后的完整目标；没提到的字段保持原值。');
+  } else {
+    parts.push(`【用户口述的新目标】\n${speech.trim()}`);
+    parts.push('请整理成结构化目标。');
+  }
+  return parts.join('\n\n');
 }
 
 export function reviewDayPrompt(reflection) {
@@ -247,6 +270,20 @@ export const DECOMPOSE_SCHEMA = {
     why: { type: 'string', description: '一句话：为什么重要' },
     milestones: { type: 'array', items: { type: 'string' }, description: '3-6 个按时间排列的里程碑，各带时间点' },
     weeklyHours: { type: 'integer', description: '建议每周投入小时数' },
+    firstActions: { type: 'array', items: { type: 'string' }, description: '本周就能开始的 2-3 个具体动作' },
+  },
+};
+
+export const GOAL_CAPTURE_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: ['title', 'why', 'area', 'horizon', 'weeklyHours', 'milestones', 'firstActions'],
+  properties: {
+    title: { type: 'string', description: '目标名：一句话、结果导向' },
+    why: { type: 'string', description: '为什么重要：第一人称，提炼用户自己的动机' },
+    area: { type: 'string', enum: AREAS },
+    horizon: { type: 'string', enum: HORIZONS },
+    weeklyHours: { type: 'number', description: '建议每周投入小时数' },
+    milestones: { type: 'array', items: { type: 'string' }, description: '3-6 个按时间排列的里程碑，各带时间点' },
     firstActions: { type: 'array', items: { type: 'string' }, description: '本周就能开始的 2-3 个具体动作' },
   },
 };

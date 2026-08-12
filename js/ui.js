@@ -11,7 +11,7 @@ import {
 } from './store.js';
 import {
   hasKey, MODELS, EFFORTS, aiPlanDay, planDayPrompt, aiPlanWeek, planWeekPrompt,
-  aiDecomposeGoal, aiReviewDay, reviewDayPrompt, aiWeekSummary, weekSummaryPrompt,
+  aiDecomposeGoal, aiCaptureGoal, aiReviewDay, reviewDayPrompt, aiWeekSummary, weekSummaryPrompt,
   aiMonthSummary, aiInsight, insightPrompt, aiCoach, testConnection,
 } from './ai.js';
 import { applyOps } from './apply.js';
@@ -66,6 +66,7 @@ function refreshModal() { if (modalRender) paintModal(); }
 function closeModal() {
   modalRender = null; modalMount = null;
   if (coachAbort) { coachAbort.abort(); coachAbort = null; }
+  dictAbandon();
   $('#modal-root').innerHTML = '';
 }
 function paintModal() {
@@ -98,6 +99,33 @@ const SVG_REFRESH = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"
 const WARN_ICON = '<span style="color:var(--q3);flex-shrink:0;display:inline-flex;margin-top:3px"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>';
 const SPARK = '<span class="spark">✦</span>';
 const AI_MARK = '<span style="color:var(--accent)">✦</span>';
+const SVG_MIC = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>';
+
+// ---- 语音听写：给任意文本域配一个麦克风（data-action="mic-toggle" data-target=<data-change 键>）----
+// 原生 Web Speech API（Chrome / Safari / Edge），不支持的浏览器按钮不出现，打字照常。
+// 识别结果相当于「替你打字」：确定的片段写进目标文本域并触发它的 data-change 处理器；
+// 停止后按 data-then 自动接一个动作（比如目标口述完自动让 AI 整理进表单）。
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+let dict = null; // {key, then, rec, wanted, base}
+
+function dictTa() { return dict ? document.querySelector(`[data-change="${dict.key}"]`) : null; }
+function dictStop() { if (!dict) return; dict.wanted = false; try { dict.rec.stop(); } catch { /* 已停 */ } }
+function dictAbandon() { if (!dict) return; dict.then = ''; dict.wanted = false; try { dict.rec.abort(); } catch { /* 已停 */ } dict = null; }
+function dictFinish() {
+  if (!dict) return;
+  const { then } = dict;
+  dict = null;
+  if (!modalRender) return; // 弹窗已经关了：不刷新、不接动作
+  refreshModal();
+  // 自动接的动作若此刻不可用（按钮禁用中，比如 AI 正忙），就不硬触发
+  if (then && Actions[then] && !document.querySelector(`[data-action="${then}"]`)?.disabled) Actions[then]();
+}
+
+function micBtn(key, then = '') {
+  if (!SpeechRec) return '';
+  const on = dict?.key === key;
+  return `<button class="btn small ${on ? 'rec' : 'ghost'}" data-action="mic-toggle" data-target="${key}" data-then="${then}">${on ? '<span class="rec-dot"></span> 在听…点一下结束' : `${SVG_MIC} 开始说`}</button>`;
+}
 
 function taskRow(t, dayKey) {
   const running = state.timer?.taskId === t.id;
@@ -133,7 +161,7 @@ function aiGate(purpose, hint) {
   // 无 Key 时的优雅降级：复制完整上下文+指令，粘贴给任何 AI
   return `<div class="ai-card">
     <div class="ai-tag">✦ AI 助手</div>
-    <div class="small" style="color:var(--ink-2)">${esc(hint)}还没有设置 API Key——你可以：</div>
+    <div class="small" style="color:var(--ink-2)">${esc(hint)}这台浏览器还没有 API Key——用桌面的「要事 First Things」快捷方式打开本站一次会自动写入；或者：</div>
     <div class="btn-row mt8">
       <button class="btn small" data-action="open-settings">去设置 Key</button>
       <button class="btn small" data-action="copy-prompt" data-purpose="${purpose}">复制上下文，粘贴给任意 AI</button>
@@ -698,6 +726,7 @@ function inboxModal() {
 let coachLog = [];   // {role:'user'|'assistant', text, applied?, skipped?, canUndo?, undone?, error?}
 let coachAbort = null;
 let coachBusy = false;
+let coachDraft = ''; // 输入框草稿：重绘（AI 回复到达 / 听写刷新）不丢正在打的字
 
 function coachMsgHTML(m) {
   if (m.role === 'user') return `<div class="msg user">${esc(m.text)}</div>`;
@@ -725,7 +754,8 @@ function coachModal() {
   <div class="chat-box">
     <div class="chat-log" id="chat-log">${msgs || (coachBusy ? '' : emptyHint)}${pending}</div>
     ${hasKey() ? `<div class="chat-input-row">
-      <textarea placeholder="输入消息，回车发送" data-enter="coach-send" id="chat-input"></textarea>
+      <textarea placeholder="说或打字，回车发送" data-enter="coach-send" data-change="coach-draft" id="chat-input">${esc(coachDraft)}</textarea>
+      ${micBtn('coach-draft')}
       <button class="btn primary" data-action="coach-send" ${coachBusy ? 'disabled' : ''}>发送</button>
     </div>` : `<div class="mt12">${aiGate('chat', '')}</div>`}
   </div>
@@ -735,7 +765,10 @@ function coachModal() {
 function coachMount() {
   const log = $('#chat-log');
   if (log) log.scrollTop = log.scrollHeight;
-  $('#chat-input')?.focus();
+  const input = $('#chat-input');
+  // 每次击键都同步草稿（change 只在失焦触发）：AI 回复到达重绘时不丢正在打的字
+  input?.addEventListener('input', (e) => { coachDraft = e.target.value; });
+  input?.focus();
 }
 
 // 发给模型的对话历史：带上执行回执，模型才知道自己上一轮做了什么、有没有被撤销
@@ -817,15 +850,17 @@ function planModal() {
     <div class="btn-row">
       <button class="btn primary" data-action="plan-adopt" ${loading ? 'disabled' : ''}>采纳所选</button>
       <button class="btn" data-action="plan-adjust" ${loading ? 'disabled' : ''}>${loading ? '<span class="spinner"></span> 调整中…' : `${AI_MARK} 按我的话调整`}</button>
+      ${micBtn('plan-feedback', 'plan-adjust')}
       <button class="btn ghost small" data-action="plan-ai" ${loading ? 'disabled' : ''}>重新生成</button>
     </div>`;
   } else if (loading) {
     body = `<div class="ai-card"><div class="ai-loading">${SPARK} 正在从你的目标、本周要事、昨日未完成与作息分解今天的草案…通常几十秒；若网络连不上 openrouter.ai，最多 150 秒会明确报错</div></div>`;
   } else if (hasKey()) {
-    body = `<div class="field"><label>可以先说点什么（也可以留空，AI 直接从目标分解）</label>
+    body = `<div class="field"><label>可以先说点什么（说或打字，也可以留空，AI 直接从目标分解）</label>
       <textarea data-change="plan-feedback" placeholder="固定日程（几点开会）、今天的状态、特别想做的事…" style="min-height:72px">${esc(planState.feedback)}</textarea></div>
     <div class="btn-row">
       <button class="btn primary" data-action="plan-ai">✦ 生成今日草案</button>
+      ${micBtn('plan-feedback', 'plan-ai')}
       <button class="btn" data-action="plan-manual">手动添加</button>
     </div>`;
   } else {
@@ -891,7 +926,14 @@ function goalModal() {
   const d = goalDraft;
   const isNew = !d.id;
   return `<h2>${isNew ? '新目标' : '编辑目标'}</h2>
-  <div class="modal-sub">目标定义了什么是「重要」。写下它，然后分解到里程碑。</div>
+  <div class="modal-sub">${isNew ? '想到什么说什么，AI 整理成表单；也可以直接在下面逐项填。' : '说改哪里，AI 直接改表单；也可以直接在下面改。'}</div>
+  <div class="field"><label>${isNew ? `口述目标${SpeechRec ? '（说或打字都行）' : ''}` : `口述修改${SpeechRec ? '（说或打字都行）' : ''}`}</label>
+    <textarea data-change="gf-speech" style="min-height:56px" placeholder="${isNew ? '例：我想年底前跑完一个半马，最近身体明显变差了…大概每周练三次吧' : '例：里程碑整体往后推两周；每周预算改成 6 小时；为什么重要帮我写得更具体'}">${esc(d.speech)}</textarea>
+    <div class="btn-row mt8">
+      ${micBtn('gf-speech', hasKey() ? 'gf-organize' : '')}
+      ${hasKey() ? `<button class="btn small" data-action="gf-organize" ${d.ai.loading ? 'disabled' : ''}>${d.ai.loading ? `${SPARK} 整理中…` : `${AI_MARK} ${isNew ? 'AI 整理进表单' : '按我说的修改'}`}</button>` : ''}
+    </div>
+  </div>
   <div class="field"><label>目标</label><input type="text" value="${esc(d.title)}" data-change="gf-title" placeholder="例：出版我的第一本书 / 跑完全马 / 发布产品 v1"></div>
   <div class="field"><label>为什么重要（未来的你会感谢这句话）</label><textarea data-change="gf-why" style="min-height:60px">${esc(d.why)}</textarea></div>
   <div style="display:flex;gap:12px;flex-wrap:wrap">
@@ -927,16 +969,30 @@ function newGoalDraft(g = null) {
     id: g.id, title: g.title, why: g.why || '', area: g.area, horizon: g.horizon,
     weeklyBudgetHours: g.weeklyBudgetHours || 0, status: g.status,
     milestonesText: (g.milestones || []).map((m) => m.title).join('\n'),
-    ai: { loading: false, error: null, firstActions: null },
+    speech: '', ai: { loading: false, error: null, firstActions: null },
   } : {
     id: null, title: '', why: '', area: '工作', horizon: '本季度', weeklyBudgetHours: 0, status: 'active',
-    milestonesText: '', ai: { loading: false, error: null, firstActions: null },
+    milestonesText: '', speech: '', ai: { loading: false, error: null, firstActions: null },
   };
 }
 
 // ----- week wizard -----
 
-let wiz = null; // {step, lastWk, summary, sumLoading, sumError, chosen:[], sugLoading, sugError, suggestions:[], budgets:{}, manual:''}
+let wiz = null; // {step, lastWk, summary, sumLoading, sumError, chosen:[], sugLoading, sugError, suggestions:[], sugSource, budgets:{}, manual:''}
+
+// 本地候选：上周未完成 + 收集箱 + 当前里程碑——零成本，进第 2 步就自动出现，不用点
+function localWeekSuggestions(exclude = []) {
+  const taken = new Set(exclude.map((c) => c.title));
+  const sugs = [];
+  const lastW = state.weeks[shiftWeek(thisWeekKey(), -1)];
+  if (lastW) for (const p of (lastW.priorities || []).filter((x) => !x.done)) sugs.push({ title: p.title, goalId: p.goalId, reason: '上周未完成' });
+  for (const it of state.inbox.slice(0, 5)) sugs.push({ title: it.title, goalId: null, reason: '来自收集箱' });
+  for (const g of activeGoals()) {
+    const ms = currentMilestone(g);
+    if (ms) sugs.push({ title: `推进：${ms.title}`, goalId: g.id, reason: '当前里程碑' });
+  }
+  return sugs.filter((s) => !taken.has(s.title));
+}
 
 function wizardModal() {
   const w = wiz;
@@ -956,6 +1012,7 @@ function wizardModal() {
     ${w.sumError ? `<div class="ai-error">${esc(w.sumError)}</div>` : ''}
     <div class="btn-row">
       ${hasKey() ? `<button class="btn small" data-action="wiz-ai-summary" ${w.sumLoading ? 'disabled' : ''}>${w.sumLoading ? '<span class="spinner"></span> 草拟中…' : `${AI_MARK} AI 草拟`}</button>` : ''}
+      ${micBtn('wiz-summary')}
     </div>
     <div class="modal-actions">
       <button class="btn ghost" data-action="modal-close">取消</button>
@@ -977,14 +1034,14 @@ function wizardModal() {
     return `<h2>每周规划 · 本周要事</h2><div class="modal-sub">AI 从目标与里程碑分解建议 → 你一句话调整 → 点「＋」挑进本周。已选的不会被动过。</div>${stepsBar}
     <div class="task-list">${chosen || '<div class="empty">还没选：从下面 AI 建议里点「＋」挑，或手动添加</div>'}</div>
     <div class="quick-add" style="margin-top:8px"><input type="text" placeholder="手动添加一件要事，回车确认" data-enter="wiz-manual-add"></div>
-    <div class="field mt12"><label>AI 建议（点「＋」加入本周）</label>
+    <div class="field mt12"><label>候选（点「＋」加入本周）</label>
       ${w.sugError ? `<div class="ai-error">${esc(w.sugError)}</div>` : ''}
-      ${w.sugLoading && !sugs ? `<div class="small" style="color:var(--ink-2)"><span class="spinner"></span> 正在从目标与里程碑分解本周要事…</div>` : ''}
+      ${w.sugLoading && !sugs ? `<div class="small" style="color:var(--ink-2)">${SPARK} 正在从目标与里程碑分解本周要事…</div>` : ''}
+      ${w.sugLoading && sugs ? `<div class="small" style="color:var(--ink-2);margin-bottom:6px">${SPARK} AI 正在结合目标细化建议…先从下面挑也行</div>` : ''}
       ${w.rationale && sugs ? `<div class="ai-rationale" style="margin-bottom:6px">${esc(w.rationale)}</div>` : ''}
-      <div>${sugs || (w.sugLoading ? '' : '<span class="muted small">点下方按钮获取建议</span>')}</div>
+      <div>${sugs || (w.sugLoading ? '' : `<span class="muted small">${hasKey() ? '暂无候选——点「AI 建议本周要事」生成' : '暂无候选。用桌面的「要事」快捷方式打开本站可自动写入 API Key，AI 会自动生成建议'}</span>`)}</div>
       <div class="btn-row mt8">
-        ${hasKey() ? `<button class="btn small" data-action="wiz-ai-suggest" ${w.sugLoading ? 'disabled' : ''}>${w.sugLoading ? '<span class="spinner"></span> 思考中…' : sugs ? `${SVG_REFRESH} 重新生成` : `${AI_MARK} AI 建议本周要事`}</button>` : `<button class="btn small ghost" data-action="copy-prompt" data-purpose="plan-week">复制上下文给 AI</button>`}
-        <button class="btn small ghost" data-action="wiz-local-suggest">用上周未完成 + 收集箱</button>
+        ${hasKey() ? `<button class="btn small" data-action="wiz-ai-suggest" ${w.sugLoading ? 'disabled' : ''}>${w.sugLoading ? `${SPARK} 思考中…` : w.sugSource === 'ai' ? `${SVG_REFRESH} 重新生成` : `${AI_MARK} AI 建议本周要事`}</button>` : `<button class="btn small ghost" data-action="copy-prompt" data-purpose="plan-week">复制上下文给 AI</button>`}
       </div>
       ${hasKey() && sugs ? `<div class="field mt8" style="margin-bottom:0"><label>对建议不满意？直接说</label>
         <textarea data-change="wiz-feedback" placeholder="例：MVP 那条太大，拆小一点；再加一条恢复跑步；健康类只留一条" style="min-height:44px">${esc(w.feedback || '')}</textarea>
@@ -1022,6 +1079,7 @@ function weekReviewModal() {
   ${wr.error ? `<div class="ai-error">${esc(wr.error)}</div>` : ''}
   <div class="btn-row">
     ${hasKey() ? `<button class="btn small" data-action="wr-ai" ${wr.loading ? 'disabled' : ''}>${wr.loading ? '<span class="spinner"></span> 草拟中…' : `${AI_MARK} AI 草拟`}</button>` : ''}
+    ${micBtn('wr-text')}
   </div>
   <div class="modal-actions">
     <button class="btn ghost" data-action="modal-close">取消</button>
@@ -1063,6 +1121,46 @@ export const Actions = {
   'go-today': () => { currentView = 'today'; render(); },
   'overlay-close': (el, ev) => { if (ev.target === el) closeModal(); },
   'modal-close': () => { closeModal(); render(); },
+
+  // --- 语音听写（通用：data-target 指向文本域的 data-change 键）---
+  'mic-toggle': (el) => {
+    if (!SpeechRec) { toast('这个浏览器不支持语音识别，直接打字就行'); return; }
+    if (dict) { const same = dict.key === el.dataset.target; dictStop(); if (same) return; }
+    const key = el.dataset.target;
+    const rec = new SpeechRec();
+    rec.lang = 'zh-CN'; rec.continuous = true; rec.interimResults = true;
+    const d = { key, then: el.dataset.then || '', rec, wanted: true, base: '' };
+    rec.onresult = (e) => {
+      if (dict !== d) return;
+      const ta = dictTa(); if (!ta) return;
+      let fin = '';
+      for (const r of e.results) if (r.isFinal) fin += r[0].transcript;
+      ta.value = (d.base + fin).trim();
+      Changes[key]?.(ta);
+    };
+    rec.onerror = (e) => {
+      if (dict !== d || e.error === 'no-speech' || e.error === 'aborted') return;
+      d.wanted = false;
+      toast(e.error === 'not-allowed' || e.error === 'service-not-allowed'
+        ? '麦克风被拒绝了：点浏览器地址栏右侧的图标允许麦克风，再试一次'
+        : `语音识别连不上（${e.error}）：Chrome 的语音服务需要能访问谷歌；直接打字效果一样`);
+    };
+    rec.onend = () => {
+      if (dict !== d) return;
+      if (d.wanted) {
+        // 引擎在停顿时会自己结束一段：只要用户没按停止，就无缝续上
+        const ta = dictTa();
+        d.base = ta && ta.value.trim() ? ta.value.trim() + '，' : '';
+        try { d.rec.start(); return; } catch { /* 引擎拒绝重启：按停止处理 */ }
+      }
+      dictFinish();
+    };
+    const ta0 = document.querySelector(`[data-change="${key}"]`);
+    d.base = ta0 && ta0.value.trim() ? ta0.value.trim() + '，' : '';
+    dict = d;
+    try { rec.start(); } catch { dict = null; toast('语音识别启动失败，直接打字就行'); return; }
+    refreshModal();
+  },
 
   // --- header ---
   'open-settings': () => { testState = { loading: false, result: null, error: null }; openModal(settingsModal); },
@@ -1131,6 +1229,7 @@ export const Actions = {
     const text = input?.value.trim();
     if (!text || coachBusy) return;
     input.value = '';
+    coachDraft = '';
     coachSend(text);
   },
   // 今天页的输入条：写了字就带着这句话进对话框，空着点开也行
@@ -1348,18 +1447,20 @@ export const Actions = {
       summary: state.weeks[lastWk]?.review?.summary || '',
       sumLoading: false, sumError: null,
       chosen: existing?.priorities?.map((p) => ({ title: p.title, goalId: p.goalId })) || [],
-      suggestions: [], sugLoading: false, sugError: null,
+      suggestions: [], sugSource: 'local', sugLoading: false, sugError: null,
       budgets: { ...(existing?.budgets || {}) },
       rationale: '', feedback: '',
     };
     if (!Object.keys(wiz.budgets).length) {
       for (const g of activeGoals()) if (g.weeklyBudgetHours) wiz.budgets[g.id] = g.weeklyBudgetHours;
     }
+    // 本地候选先自动铺上（零成本、即刻可挑）；AI 建议进第 2 步时自动开始细化
+    wiz.suggestions = localWeekSuggestions(wiz.chosen);
     // 上周没数据会直接跳到第 2 步：此时立刻让 AI 从目标分解本周要事
     const lastSt = weekStats(lastWk);
     const hasLast = lastSt.tasksTotal > 0 || state.weeks[lastWk]?.plannedAt;
     openModal(wizardModal);
-    if (!hasLast && hasKey() && !wiz.suggestions.length) Actions['wiz-ai-suggest']();
+    if (!hasLast && hasKey()) Actions['wiz-ai-suggest']();
   },
   'wiz-back': () => { wiz.step = Math.max(1, wiz.step - 1); refreshModal(); },
   'wiz-next': () => {
@@ -1367,15 +1468,16 @@ export const Actions = {
       update(() => { ensureWeek(wiz.lastWk).review = { summary: wiz.summary.trim(), reviewedAt: Date.now() }; });
     }
     wiz.step = Math.min(3, wiz.step + 1); refreshModal();
-    // 进入第 2 步时自动分解（AI 先给，人再调）
-    if (wiz.step === 2 && hasKey() && !wiz.suggestions.length && !wiz.sugLoading) Actions['wiz-ai-suggest']();
+    // 进入第 2 步时自动分解（本地候选已铺好，AI 到了就细化；出过错就等用户手动点，不空转）
+    if (wiz.step === 2 && hasKey() && wiz.sugSource !== 'ai' && !wiz.sugLoading && !wiz.sugError) Actions['wiz-ai-suggest']();
   },
   'wiz-ai-summary': () => withAI({ set loading(v) { wiz.sumLoading = v; }, set error(v) { wiz.sumError = v; } }, refreshModal, async () => {
     wiz.summary = (await aiWeekSummary(weekContextFor(wiz.lastWk))).trim();
   }),
   'wiz-ai-suggest': () => withAI({ set loading(v) { wiz.sugLoading = v; }, set error(v) { wiz.sugError = v; } }, refreshModal, async () => {
     const plan = await aiPlanWeek(wiz.feedback || '');
-    wiz.suggestions = plan.priorities;
+    wiz.suggestions = plan.priorities.filter((p) => !wiz.chosen.some((c) => c.title === p.title));
+    wiz.sugSource = 'ai';
     wiz.rationale = plan.rationale;
     wiz.feedback = '';
   }),
@@ -1391,17 +1493,6 @@ export const Actions = {
     wiz.rationale = plan.rationale;
     wiz.feedback = '';
   }),
-  'wiz-local-suggest': () => {
-    const sugs = [];
-    const lastW = state.weeks[wiz.lastWk];
-    if (lastW) for (const p of lastW.priorities.filter((x) => !x.done)) sugs.push({ title: p.title, goalId: p.goalId, reason: '上周未完成' });
-    for (const it of state.inbox.slice(0, 5)) sugs.push({ title: it.title, goalId: null, reason: '来自收集箱' });
-    for (const g of activeGoals()) {
-      const ms = currentMilestone(g);
-      if (ms) sugs.push({ title: `推进：${ms.title}`, goalId: g.id, reason: '当前里程碑' });
-    }
-    wiz.suggestions = sugs; refreshModal();
-  },
   'wiz-pick': (el) => {
     const sg = wiz.suggestions[Number(el.dataset.idx)];
     if (!sg) return;
@@ -1475,6 +1566,28 @@ export const Actions = {
       day.tasks.push(newTask(a, { goalId: goalDraft.id, mit: mits < 3, estMin: 60 }));
     });
     toast('已加到今天');
+  },
+  // 口述 → AI 整理进表单（新建），或按模糊指令修改现有表单（编辑）。
+  // 只填表单不落库：用户看一眼、想改就改，点保存才生效。
+  'gf-organize': () => {
+    const d = goalDraft;
+    if (!d.speech.trim()) { toast('先说点什么（或打几个字）'); return; }
+    return withAI({ set loading(v) { d.ai.loading = v; }, set error(v) { d.ai.error = v; } }, refreshModal, async () => {
+      const existing = d.id ? [
+        `目标：${d.title}`,
+        `为什么重要：${d.why || '（空）'}`,
+        `领域：${d.area}｜期限：${d.horizon}｜每周预算：${d.weeklyBudgetHours || 0} 小时`,
+        `里程碑：\n${d.milestonesText || '（空）'}`,
+      ].join('\n') : null;
+      const g = await aiCaptureGoal(d.speech, existing);
+      d.title = g.title || d.title;
+      d.why = g.why || d.why;
+      if (AREAS.includes(g.area)) d.area = g.area;
+      if (HORIZONS.includes(g.horizon)) d.horizon = g.horizon;
+      if (g.weeklyHours > 0) d.weeklyBudgetHours = g.weeklyHours;
+      d.milestonesText = (g.milestones || []).length ? g.milestones.join('\n') : d.milestonesText;
+      if (g.firstActions?.length) d.ai.firstActions = g.firstActions;
+    });
   },
   'gf-save': () => {
     const d = goalDraft;
@@ -1579,6 +1692,7 @@ export const Changes = {
   'task-act': (el) => mutTask((t) => { t.actMin = el.value === '' ? null : Math.max(0, Number(el.value)); }),
   'gf-title': (el) => { goalDraft.title = el.value; },
   'gf-why': (el) => { goalDraft.why = el.value; },
+  'gf-speech': (el) => { goalDraft.speech = el.value; },
   'gf-area': (el) => { goalDraft.area = el.value; },
   'gf-horizon': (el) => { goalDraft.horizon = el.value; },
   'gf-budget': (el) => { goalDraft.weeklyBudgetHours = Number(el.value) || 0; },

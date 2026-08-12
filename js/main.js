@@ -17,6 +17,17 @@ try {
   }
 } catch { /* 没有本地配置文件——正常 */ }
 
+// 带钥匙的快捷方式：网址 #k=<OpenRouter Key>，打开一次自动写入本机并清掉地址栏。
+// 公开仓库不能放密钥（会被扫描盗用、自动作废），所以钥匙只活在用户桌面的
+// 快捷方式文件里；# 后面的部分浏览器不会发给任何服务器。
+try {
+  const hk = new URLSearchParams(location.hash.slice(1)).get('k');
+  if (hk && hk.startsWith('sk-')) {
+    if (state.settings.apiKey !== hk) update((s) => { s.settings.apiKey = hk; });
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+} catch { /* hash 解析失败就当没有 */ }
+
 applyTheme();
 render();
 subscribe(render);
@@ -78,6 +89,9 @@ initAuto();
 setInterval(() => {
   if (state.timer && document.visibilityState === 'visible' && !document.querySelector('.overlay')) render();
 }, 30_000);
+
+// 申请「持久存储」：设备存储紧张时浏览器也不回收本站数据（被拒绝就算了，不影响使用）
+if (navigator.storage?.persist) navigator.storage.persist().catch(() => { /* 无妨 */ });
 
 if ('serviceWorker' in navigator) {
   // 顶层 await 可能让本模块在 load 事件之后才继续执行，因此不能只挂 load 监听

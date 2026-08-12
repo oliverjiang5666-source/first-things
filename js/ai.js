@@ -8,8 +8,9 @@ import { state, goalById } from './store.js';
 import {
   composeSystem, coachContext,
   planDayPrompt, planWeekPrompt, decomposePrompt, reviewDayPrompt,
-  weekSummaryPrompt, monthSummaryPrompt, insightPrompt, briefPrompt,
+  weekSummaryPrompt, monthSummaryPrompt, insightPrompt, briefPrompt, captureGoalPrompt,
   PLAN_DAY_SCHEMA, PLAN_WEEK_SCHEMA, DECOMPOSE_SCHEMA, INSIGHT_SCHEMA, COACH_SCHEMA, BRIEF_SCHEMA,
+  GOAL_CAPTURE_SCHEMA,
 } from './prompts.js';
 
 // ui.js 的「查看上下文 / 复制给任意 AI」直接用这些构造器
@@ -55,7 +56,7 @@ const REQUEST_TIMEOUT_MS = 150_000;
 
 async function rawCall(body, { stream = false, onDelta = null, signal = null } = {}) {
   const key = state.settings.apiKey?.trim();
-  if (!key) { const e = new Error('还没有设置 API Key'); e.noKey = true; throw e; }
+  if (!key) { const e = new Error('这台浏览器还没有 API Key：用桌面的「要事 First Things」快捷方式打开本站一次即可自动写入；或在右上角设置里粘贴'); e.noKey = true; throw e; }
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
@@ -235,6 +236,17 @@ export async function aiPlanWeek(input = '', prior = null) {
   const plan = parseStructured(text);
   plan.priorities = (plan.priorities || []).slice(0, 5).map((p) => ({ ...p, goalId: validateGoalId(p.goalId) }));
   return plan;
+}
+
+// 目标口述整理：一段随口说的话（新建），或对现有目标的模糊修改指令（编辑）→ 完整表单结构
+export async function aiCaptureGoal(speech, existing = null) {
+  const text = await callAI({
+    system: composeSystem('goal-capture'),
+    messages: [{ role: 'user', content: captureGoalPrompt(speech, existing) }],
+    schema: GOAL_CAPTURE_SCHEMA, schemaName: 'goal_capture',
+    effort: 'high',
+  });
+  return parseStructured(text);
 }
 
 export async function aiDecomposeGoal(title, why) {
