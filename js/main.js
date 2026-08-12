@@ -61,7 +61,8 @@ window.addEventListener('focus', checkDayChange);
 setInterval(checkDayChange, 60_000);
 
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(() => { /* http or unsupported — fine */ });
-  });
+  // 顶层 await 可能让本模块在 load 事件之后才继续执行，因此不能只挂 load 监听
+  const registerSW = () => navigator.serviceWorker.register('./sw.js').catch(() => { /* http or unsupported — fine */ });
+  if (document.readyState === 'complete') registerSW();
+  else window.addEventListener('load', registerSW);
 }
