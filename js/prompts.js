@@ -43,13 +43,15 @@ const SPECS = {
 - 只增不删：用户已安排的任务永远不会被你的输出删除（应用只把你输出的条目新增进列表）。已有任务不要原样重复输出；确实建议推迟或放弃某件已有的事，放进 defer 说理由，由用户自己决定。
 - 迭代调整：如果给了【你上一轮的草案】和【用户对草案的反馈】，在草案基础上做最小修改后输出完整新草案——反馈没提到的条目原样保留（标题、时间都不动），不要推倒重来。`,
 
-  'plan-week': `本次职责：周计划者。帮用户选出本周 3-5 件要事。
+  'plan-week': `本次职责：周计划者。一次给出完整的一周安排：本周要事、每个目标的时间预算、上周复盘摘要。
 规则：
 - 分解优先：从每个进行中目标的当前里程碑倒推「本周做什么才算推进」，即使用户没有输入也给出完整建议。
 - 每件要事是「本周结束时可检验的结果」，不是模糊方向。
 - 优先考虑：上周未完成但仍重要的事 > 连续多周投入不足的目标 > 当前里程碑的下一步。
-- 只增不删：已有的本周要事不会被你的输出删除，也不要原样重复输出；只补充新的。
-- 迭代调整：如果给了【你上一轮的草案】和【用户对草案的反馈】，在草案基础上做最小修改后输出完整新草案；反馈没提到的条目原样保留。
+- budgets 给每个进行中的目标本周预留小时数：结合上周实际投入与作息给现实数字，不给理想数字。
+- lastWeekSummary：把上下文里的上周数据压缩成 ≤80 字第一人称复盘摘要（会长期保存、反复引用）；已有【上周复盘草稿】就在其基础上精炼。只要上下文里出现了【最近 7 天】记录或任何目标的上周投入，就必须草拟，不要偷懒；完全没有历史记录才给空字符串。
+- 只增不删：标了「已定」的要事不要动也不要重复输出；只补充新的。
+- 迭代调整：如果给了【你上一轮的草案】和【用户对草案的反馈】，在草案基础上做最小修改后输出完整新草案；反馈没提到的条目（含预算、摘要）原样保留。
 - 发现值得注意的模式（比如某个目标一直被忽略），在 rationale 里直说。`,
 
   'decompose': `本次职责：目标分解者。用第一性原理把大目标拆到可执行。
@@ -134,7 +136,7 @@ export function planDayPrompt(brainDump, prior = null) {
   return parts.join('\n\n');
 }
 
-const WEEK_SPEC = `请建议本周要事：3-5 件，每件关联目标 id 并说明理由（reason），最后给整体 rationale。`;
+const WEEK_SPEC = `请一次给出完整的本周安排：priorities 本周要事 3-5 件（每件关联目标 id、说明 reason；草案里标了「已定」的不要重复提议，也不要给它们换写法）；budgets 给每个进行中的目标建议本周小时数；lastWeekSummary 上周复盘摘要（≤80 字第一人称；上下文有最近记录就必须草拟，完全没有才给空字符串）；rationale 2-3 句整体思路。`;
 
 export function planWeekPrompt(input = '', prior = null) {
   const parts = [buildContext('plan-week')];
@@ -245,7 +247,7 @@ export const PLAN_DAY_SCHEMA = {
 
 export const PLAN_WEEK_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['priorities', 'rationale'],
+  required: ['priorities', 'budgets', 'lastWeekSummary', 'rationale'],
   properties: {
     priorities: {
       type: 'array',
@@ -259,6 +261,19 @@ export const PLAN_WEEK_SCHEMA = {
         },
       },
     },
+    budgets: {
+      type: 'array',
+      description: '每个进行中目标的本周时间预算',
+      items: {
+        type: 'object', additionalProperties: false,
+        required: ['goalId', 'hours'],
+        properties: {
+          goalId: { type: 'string', description: '目标 id' },
+          hours: { type: 'number', description: '本周预留小时数（现实数字）' },
+        },
+      },
+    },
+    lastWeekSummary: { type: 'string', description: '上周的第一人称复盘摘要，≤80 字；没有上周数据给空字符串' },
     rationale: { type: 'string' },
   },
 };

@@ -15,6 +15,7 @@ import {
   aiMonthSummary, aiInsight, insightPrompt, aiCoach, testConnection,
 } from './ai.js';
 import { applyOps } from './apply.js';
+import { syncStatusText, syncNow, onTokenChange } from './sync.js';
 import { refreshBrief, autoComment } from './auto.js';
 import { buildContext, contextMeta } from './context.js';
 import { q2TrendChart } from './charts.js';
@@ -372,7 +373,7 @@ function renderWeek() {
   if (!week?.plannedAt) {
     html += `<div class="card"><div class="card-title">每周规划 · 15 分钟</div>
       <div class="small" style="color:var(--ink-2)">回顾上周 → 定 3-5 件本周要事 → 给每个目标预留时间。这是整个系统最重要的仪式。</div>
-      <div class="btn-row mt12"><button class="btn primary" data-action="wiz-open">开始每周规划</button></div></div>`;
+      <div class="btn-row mt12"><button class="btn primary" data-action="wp-open">开始每周规划</button></div></div>`;
   } else {
     // 本周要事
     const prios = week.priorities.map((p) => {
@@ -386,7 +387,7 @@ function renderWeek() {
         ${isCurrent && !p.done ? `<button class="btn small ghost" data-action="prio-today" data-week="${wk}" data-id="${p.id}">加到今天</button>` : ''}
       </div>`;
     }).join('');
-    html += `<div class="card"><div class="card-title">本周要事 · ${st.priosDone}/${st.priosTotal}${isCurrent ? `<button class="title-action" data-action="wiz-open" style="cursor:pointer">重新规划</button>` : ''}</div><div class="task-list">${prios}</div></div>`;
+    html += `<div class="card"><div class="card-title">本周要事 · ${st.priosDone}/${st.priosTotal}${isCurrent ? `<button class="title-action" data-action="wp-open" style="cursor:pointer">重新规划</button>` : ''}</div><div class="task-list">${prios}</div></div>`;
 
     // 目标时间预算
     html += goalBudgetCard(wk);
@@ -493,6 +494,10 @@ function goalCard(g, thisMin) {
       ${g.milestones?.length ? `<span class="chip">里程碑 ${msDone}/${g.milestones.length}</span>` : ''}
     </div>
     ${g.milestones?.length ? `<div class="ms-list">${msList}</div>` : ''}
+    ${(() => {
+      const prios = (state.weeks[thisWeekKey()]?.priorities || []).filter((p) => p.goalId === g.id);
+      return prios.length ? `<div class="small" style="color:var(--ink-2);margin-top:6px">本周要事：${prios.map((p) => `${p.done ? '✓ ' : ''}${esc(p.title)}`).join(' · ')}</div>` : '';
+    })()}
   </div>`;
 }
 
@@ -674,6 +679,17 @@ function settingsModal() {
 
   <div class="divider"></div>
 
+  <div class="field"><label>云同步（私有 GitHub 仓库，跨设备）</label>
+    <input type="password" value="${esc(s.ghToken || '')}" data-change="set-ghtoken" placeholder="github_pat_…（细粒度令牌，只授权数据仓库）" autocomplete="off">
+    <div class="hint">数据整包存到你的私有仓库 first-things-data，改动 8 秒内自动上云，打开自动拉取，谁新用谁。令牌只存本机、只发 api.github.com；备份与云端文件都不含密钥。</div>
+    <div class="btn-row mt8">
+      <button class="btn small" data-action="sync-now">立即同步</button>
+      <span class="small" style="color:var(--ink-2)">${esc(syncStatusText())}</span>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
   <div class="field"><label>关于我（AI 会始终参考）</label>
     <textarea data-change="set-about" placeholder="例：我是一名工程师，现阶段最重要的是完成 X。固定日程：周二四 10:00-11:30 例会。晚上 10 点后效率低。">${esc(p.aboutMe)}</textarea></div>
 
@@ -699,7 +715,7 @@ function settingsModal() {
     <button class="btn small" data-action="demo-load">加载示例数据</button>
     <button class="btn small danger" data-action="wipe-data">清空所有数据</button>
   </div>
-  <div class="muted small mt12">要事 First Things v1.4 · 数据存储在本机浏览器 · 「今天」按北京时间（UTC+8）判定 · <a href="https://github.com/oliverjiang5666-source/first-things" target="_blank" rel="noreferrer">GitHub</a></div>
+  <div class="muted small mt12">要事 First Things v1.5 · 数据存本机 + 可选私有仓库云同步 · 「今天」按北京时间（UTC+8）判定 · <a href="https://github.com/oliverjiang5666-source/first-things" target="_blank" rel="noreferrer">GitHub</a></div>
   <div class="modal-actions"><button class="btn" data-action="modal-close">完成</button></div>`;
 }
 
@@ -925,15 +941,41 @@ let goalDraft = null; // {id?, title, why, area, horizon, weeklyBudgetHours, mil
 function goalModal() {
   const d = goalDraft;
   const isNew = !d.id;
-  return `<h2>${isNew ? '新目标' : '编辑目标'}</h2>
-  <div class="modal-sub">${isNew ? '想到什么说什么，AI 整理成表单；也可以直接在下面逐项填。' : '说改哪里，AI 直接改表单；也可以直接在下面改。'}</div>
-  <div class="field"><label>${isNew ? `口述目标${SpeechRec ? '（说或打字都行）' : ''}` : `口述修改${SpeechRec ? '（说或打字都行）' : ''}`}</label>
+  const showForm = isNew || d.manualOpen;
+
+  // 口述块：新建=从零整理；编辑=模糊指令直接改
+  const speechBlock = `<div class="field"><label>${isNew ? '口述目标' : '想改哪里，直接说'}${SpeechRec ? '（说或打字都行）' : ''}</label>
     <textarea data-change="gf-speech" style="min-height:56px" placeholder="${isNew ? '例：我想年底前跑完一个半马，最近身体明显变差了…大概每周练三次吧' : '例：里程碑整体往后推两周；每周预算改成 6 小时；为什么重要帮我写得更具体'}">${esc(d.speech)}</textarea>
     <div class="btn-row mt8">
       ${micBtn('gf-speech', hasKey() ? 'gf-organize' : '')}
-      ${hasKey() ? `<button class="btn small" data-action="gf-organize" ${d.ai.loading ? 'disabled' : ''}>${d.ai.loading ? `${SPARK} 整理中…` : `${AI_MARK} ${isNew ? 'AI 整理进表单' : '按我说的修改'}`}</button>` : ''}
+      ${hasKey() ? `<button class="btn small" data-action="gf-organize" ${d.ai.loading ? 'disabled' : ''}>${d.ai.loading ? `${SPARK} 正在改…` : `${AI_MARK} ${isNew ? 'AI 整理成目标' : '按我说的修改'}`}</button>` : ''}
     </div>
-  </div>
+  </div>`;
+
+  // 编辑模式读视图：为什么/里程碑/本周要事一眼可见，不用翻表单
+  let readView = '';
+  if (!isNew && !showForm) {
+    const real = goalById(d.id);
+    const doneTitles = new Set((real?.milestones || []).filter((m) => m.done).map((m) => m.title));
+    const lines = d.milestonesText.split('\n').map((x) => x.trim()).filter(Boolean);
+    let curFound = false;
+    const msRead = lines.map((line) => {
+      const done = doneTitles.has(line);
+      let cls = done ? 'done' : '';
+      if (!done && !curFound) { cls += ' current'; curFound = true; }
+      return `<div class="ms-item ${cls}"><span class="ms-check">${done ? '✓' : '○'}</span><span>${esc(line)}</span></div>`;
+    }).join('');
+    const prios = (state.weeks[thisWeekKey()]?.priorities || []).filter((p) => p.goalId === d.id);
+    readView = `${d.why ? `<div class="goal-why" style="margin:2px 0 8px">${esc(d.why)}</div>` : ''}
+    <div class="goal-meta" style="margin-bottom:8px">
+      <span class="chip">${esc(d.area)}</span><span class="chip">${esc(d.horizon)}</span>
+      ${d.weeklyBudgetHours ? `<span class="chip">预算 ${d.weeklyBudgetHours}h/周</span>` : ''}
+    </div>
+    ${lines.length ? `<div class="ms-list">${msRead}</div>` : '<div class="muted small">还没有里程碑——说一句让 AI 拆，或手动编辑</div>'}
+    ${prios.length ? `<div class="small" style="color:var(--ink-2);margin-top:8px">本周要事：${prios.map((p) => `${p.done ? '✓ ' : ''}${esc(p.title)}`).join(' · ')}</div>` : ''}`;
+  }
+
+  const formBlock = !showForm ? '' : `
   <div class="field"><label>目标</label><input type="text" value="${esc(d.title)}" data-change="gf-title" placeholder="例：出版我的第一本书 / 跑完全马 / 发布产品 v1"></div>
   <div class="field"><label>为什么重要（未来的你会感谢这句话）</label><textarea data-change="gf-why" style="min-height:60px">${esc(d.why)}</textarea></div>
   <div style="display:flex;gap:12px;flex-wrap:wrap">
@@ -942,15 +984,22 @@ function goalModal() {
     <div class="field" style="flex:1;min-width:130px"><label>每周预算（小时）</label><input type="number" min="0" step="0.5" value="${d.weeklyBudgetHours || ''}" data-change="gf-budget" placeholder="如 5"></div>
   </div>
   <div class="field"><label>里程碑（一行一个，按时间顺序，带时间点）</label>
-    <textarea data-change="gf-ms" placeholder="9月底：完成文献综述\n10月底：完成初稿\n12月：投稿" style="min-height:84px">${esc(d.milestonesText)}</textarea></div>
+    <textarea data-change="gf-ms" placeholder="9月底：完成文献综述\n10月底：完成初稿\n12月：投稿" style="min-height:84px">${esc(d.milestonesText)}</textarea></div>`;
 
+  return `<h2>${isNew ? '新目标' : esc(d.title || '编辑目标')}</h2>
+  <div class="modal-sub">${isNew ? '想到什么说什么，AI 整理成目标；也可以手动逐项填。' : '一句话说改哪里，AI 直接改；改完看下面确认，点保存生效。'}</div>
+  ${speechBlock}
+  ${readView}
   ${d.ai.error ? `<div class="ai-error">${esc(d.ai.error)}</div>` : ''}
   ${d.ai.firstActions?.length ? `<div class="ai-card"><div class="ai-tag">✦ 本周就能开始的第一步</div>
     ${d.ai.firstActions.map((a, i) => `<div class="ai-item"><div style="flex:1"><div class="ai-item-title">${esc(a)}</div></div><button class="btn small" data-action="gf-first-today" data-idx="${i}">加到今天</button></div>`).join('')}
   </div>` : ''}
+  ${formBlock}
 
   <div class="btn-row">
-    ${hasKey() ? `<button class="btn" data-action="gf-ai" ${d.ai.loading ? 'disabled' : ''}>${d.ai.loading ? '<span class="spinner"></span> 第一性原理分解中…' : `${AI_MARK} AI 帮我分解这个目标`}</button>` : `<button class="btn small ghost" data-action="copy-prompt" data-purpose="decompose">复制分解指令给 AI</button>`}
+    ${showForm && hasKey() ? `<button class="btn" data-action="gf-ai" ${d.ai.loading ? 'disabled' : ''}>${d.ai.loading ? '<span class="spinner"></span> 第一性原理分解中…' : `${AI_MARK} AI 帮我分解这个目标`}</button>` : ''}
+    ${!hasKey() ? `<button class="btn small ghost" data-action="copy-prompt" data-purpose="decompose">复制分解指令给 AI</button>` : ''}
+    ${!isNew ? `<button class="btn small ghost" data-action="gf-manual-toggle">${showForm ? '收起表单' : '手动编辑'}</button>` : ''}
   </div>
 
   ${!isNew ? `<div class="field mt12"><label>状态</label><div class="seg">
@@ -969,18 +1018,18 @@ function newGoalDraft(g = null) {
     id: g.id, title: g.title, why: g.why || '', area: g.area, horizon: g.horizon,
     weeklyBudgetHours: g.weeklyBudgetHours || 0, status: g.status,
     milestonesText: (g.milestones || []).map((m) => m.title).join('\n'),
-    speech: '', ai: { loading: false, error: null, firstActions: null },
+    speech: '', manualOpen: false, ai: { loading: false, error: null, firstActions: null },
   } : {
     id: null, title: '', why: '', area: '工作', horizon: '本季度', weeklyBudgetHours: 0, status: 'active',
-    milestonesText: '', speech: '', ai: { loading: false, error: null, firstActions: null },
+    milestonesText: '', speech: '', manualOpen: false, ai: { loading: false, error: null, firstActions: null },
   };
 }
 
-// ----- week wizard -----
+// ----- 每周规划：一屏出完整草案（要事+预算+上周摘要），说一句话调整，确认即生效 -----
 
-let wiz = null; // {step, lastWk, summary, sumLoading, sumError, chosen:[], sugLoading, sugError, suggestions:[], sugSource, budgets:{}, manual:''}
+let wp = null; // {loading, error, prios:[{title,goalId,reason,on,fixed}], budgets:{gid:h}, summary, summaryTouched, rationale, feedback, hasLastData}
 
-// 本地候选：上周未完成 + 收集箱 + 当前里程碑——零成本，进第 2 步就自动出现，不用点
+// 本地候选：上周未完成 + 收集箱 + 当前里程碑——零成本，没有 Key 时也有草案可用
 function localWeekSuggestions(exclude = []) {
   const taken = new Set(exclude.map((c) => c.title));
   const sugs = [];
@@ -994,79 +1043,83 @@ function localWeekSuggestions(exclude = []) {
   return sugs.filter((s) => !taken.has(s.title));
 }
 
-function wizardModal() {
-  const w = wiz;
-  const stepsBar = `<div class="wizard-steps">${[1, 2, 3].map((i) => `<div class="wstep ${w.step >= i ? 'on' : ''}"></div>`).join('')}</div>`;
+function weekPlanModal() {
+  const lastWk = shiftWeek(thisWeekKey(), -1);
+  const lastSt = weekStats(lastWk);
+  const statBits = wp.hasLastData
+    ? `上周：要事 ${lastSt.priosDone}/${lastSt.priosTotal} · 投入 ${hoursStr(lastSt.doneMin)} · 重要不紧急 ${lastSt.q2Share != null ? (lastSt.q2Share * 100).toFixed(0) + '%' : '—'} · 复盘 ${lastSt.daysReviewed}/7`
+    : 'AI 从目标与里程碑直接分解本周';
 
-  if (w.step === 1) {
-    const lastSt = weekStats(w.lastWk);
-    const hasLast = lastSt.tasksTotal > 0 || state.weeks[w.lastWk]?.plannedAt;
-    if (!hasLast) { w.step = 2; return wizardModal(); }
-    return `<h2>每周规划 · 回顾上周</h2><div class="modal-sub">${weekLabel(w.lastWk)}</div>${stepsBar}
-    <div class="kv"><span class="k">上周要事完成</span><span class="v">${lastSt.priosDone} / ${lastSt.priosTotal}</span></div>
-    <div class="kv"><span class="k">投入总时长</span><span class="v">${hoursStr(lastSt.doneMin)}</span></div>
-    <div class="kv"><span class="k">重要不紧急占比</span><span class="v">${lastSt.q2Share != null ? (lastSt.q2Share * 100).toFixed(0) + '%' : '—'}</span></div>
-    <div class="kv"><span class="k">复盘天数</span><span class="v">${lastSt.daysReviewed} / 7</span></div>
-    <div class="field mt12"><label>上周复盘摘要（80 字以内，会成为长期记忆）</label>
-      <textarea data-change="wiz-summary" placeholder="主要完成了什么？没完成的原因？下周最该注意什么？">${esc(w.summary)}</textarea></div>
-    ${w.sumError ? `<div class="ai-error">${esc(w.sumError)}</div>` : ''}
-    <div class="btn-row">
-      ${hasKey() ? `<button class="btn small" data-action="wiz-ai-summary" ${w.sumLoading ? 'disabled' : ''}>${w.sumLoading ? '<span class="spinner"></span> 草拟中…' : `${AI_MARK} AI 草拟`}</button>` : ''}
-      ${micBtn('wiz-summary')}
+  let body = '';
+  if (wp.loading && !wp.prios.length) {
+    body = `<div class="ai-card"><div class="ai-loading">${SPARK} 正在读你的目标、里程碑、上周投入与收集箱，安排整周…通常几十秒</div></div>`;
+  } else {
+    const rows = wp.prios.map((p, i) => {
+      const g = p.goalId ? goalById(p.goalId) : null;
+      return `<div class="ai-item">
+        <input type="checkbox" data-change="wp-toggle" data-idx="${i}" ${p.on ? 'checked' : ''}>
+        <div style="flex:1"><div class="ai-item-title">${esc(p.title)}</div>
+        <div class="ai-item-meta">${[p.fixed ? '已定' : null, g ? g.title : null, p.reason || null].filter(Boolean).map(esc).join(' · ')}</div></div>
+      </div>`;
+    }).join('');
+    const goals = activeGoals();
+    const totalH = goals.reduce((s, g) => s + (Number(wp.budgets[g.id]) || 0), 0);
+    const budgetRows = goals.map((g) => `<div class="goal-bar-row">
+      <div class="goal-bar-name" style="flex-basis:180px"><span class="dot" style="background:${goalColor(g)};width:8px;height:8px;border-radius:50%"></span><span>${esc(g.title)}</span></div>
+      <input type="number" min="0" step="0.5" value="${wp.budgets[g.id] ?? ''}" data-change="wp-budget" data-goal="${g.id}" style="width:80px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card-2)"> <span class="muted small">小时</span>
+    </div>`).join('');
+    body = `${wp.rationale ? `<div class="ai-rationale">${esc(wp.rationale)}</div>` : ''}
+    ${wp.loading ? `<div class="small" style="color:var(--ink-2);margin:4px 0">${SPARK} 正在按你的话调整…</div>` : ''}
+    <div class="ai-card" style="margin-top:8px">
+      ${rows || '<div class="empty">暂无草案——手动补一件，或点重新生成</div>'}
+      <div class="quick-add" style="margin-top:8px"><input type="text" placeholder="手动补一件，回车确认" data-enter="wp-manual"></div>
     </div>
-    <div class="modal-actions">
-      <button class="btn ghost" data-action="modal-close">取消</button>
-      <button class="btn primary" data-action="wiz-next">下一步</button>
-    </div>`;
-  }
-
-  if (w.step === 2) {
-    const chosen = w.chosen.map((c, i) => {
-      const g = c.goalId ? goalById(c.goalId) : null;
-      return `<div class="task"><div class="task-main"><div class="task-title">${esc(c.title)}</div>
-        <div class="task-meta">${g ? `<span class="chip" style="--gc:${goalColor(g)}"><span class="dot"></span>${esc(g.title)}</span>` : '<span class="chip">未关联</span>'}</div></div>
-        <button class="btn small ghost" data-action="wiz-unpick" data-idx="${i}">移除</button></div>`;
-    }).join('');
-    const sugs = (w.suggestions || []).map((sg, i) => {
-      const g = sg.goalId ? goalById(sg.goalId) : null;
-      return `<button class="suggest-chip" data-action="wiz-pick" data-idx="${i}" title="${esc(sg.reason || '')}">＋ ${esc(sg.title)}${g ? ` <span class="muted">· ${esc(g.title)}</span>` : ''}</button>`;
-    }).join('');
-    return `<h2>每周规划 · 本周要事</h2><div class="modal-sub">AI 从目标与里程碑分解建议 → 你一句话调整 → 点「＋」挑进本周。已选的不会被动过。</div>${stepsBar}
-    <div class="task-list">${chosen || '<div class="empty">还没选：从下面 AI 建议里点「＋」挑，或手动添加</div>'}</div>
-    <div class="quick-add" style="margin-top:8px"><input type="text" placeholder="手动添加一件要事，回车确认" data-enter="wiz-manual-add"></div>
-    <div class="field mt12"><label>候选（点「＋」加入本周）</label>
-      ${w.sugError ? `<div class="ai-error">${esc(w.sugError)}</div>` : ''}
-      ${w.sugLoading && !sugs ? `<div class="small" style="color:var(--ink-2)">${SPARK} 正在从目标与里程碑分解本周要事…</div>` : ''}
-      ${w.sugLoading && sugs ? `<div class="small" style="color:var(--ink-2);margin-bottom:6px">${SPARK} AI 正在结合目标细化建议…先从下面挑也行</div>` : ''}
-      ${w.rationale && sugs ? `<div class="ai-rationale" style="margin-bottom:6px">${esc(w.rationale)}</div>` : ''}
-      <div>${sugs || (w.sugLoading ? '' : `<span class="muted small">${hasKey() ? '暂无候选——点「AI 建议本周要事」生成' : '暂无候选。用桌面的「要事」快捷方式打开本站可自动写入 API Key，AI 会自动生成建议'}</span>`)}</div>
+    <div class="field mt12"><label>目标时间预算（本周合计 ${totalH} 小时）</label>${budgetRows}</div>
+    ${wp.hasLastData ? `<div class="field mt12"><label>上周复盘摘要（可改；保存后成为长期记忆）</label>
+      <textarea data-change="wp-summary" style="min-height:56px" placeholder="AI 会自动草拟；也可以自己写">${esc(wp.summary)}</textarea></div>` : ''}
+    ${hasKey() ? `<div class="field mt12" style="margin-bottom:0"><label>想调整？直接说（说或打字）</label>
+      <textarea data-change="wp-feedback" placeholder="例：MVP 那条拆小点；跑步预算改 3 小时；再加一条给项目写文档" style="min-height:48px">${esc(wp.feedback)}</textarea>
       <div class="btn-row mt8">
-        ${hasKey() ? `<button class="btn small" data-action="wiz-ai-suggest" ${w.sugLoading ? 'disabled' : ''}>${w.sugLoading ? `${SPARK} 思考中…` : w.sugSource === 'ai' ? `${SVG_REFRESH} 重新生成` : `${AI_MARK} AI 建议本周要事`}</button>` : `<button class="btn small ghost" data-action="copy-prompt" data-purpose="plan-week">复制上下文给 AI</button>`}
-      </div>
-      ${hasKey() && sugs ? `<div class="field mt8" style="margin-bottom:0"><label>对建议不满意？直接说</label>
-        <textarea data-change="wiz-feedback" placeholder="例：MVP 那条太大，拆小一点；再加一条恢复跑步；健康类只留一条" style="min-height:44px">${esc(w.feedback || '')}</textarea>
-        <div class="btn-row mt8"><button class="btn small" data-action="wiz-ai-adjust" ${w.sugLoading ? 'disabled' : ''}>${w.sugLoading ? '<span class="spinner"></span> 调整中…' : `${AI_MARK} 按我的话调整`}</button></div></div>` : ''}
-    </div>
-    <div class="modal-actions">
-      <button class="btn ghost left" data-action="wiz-back">上一步</button>
-      <button class="btn ghost" data-action="modal-close">取消</button>
-      <button class="btn primary" data-action="wiz-next" ${w.chosen.length ? '' : 'disabled'}>下一步</button>
-    </div>`;
+        <button class="btn small" data-action="wp-adjust" ${wp.loading ? 'disabled' : ''}>${wp.loading ? `${SPARK} 调整中…` : `${AI_MARK} 按我的话调整`}</button>
+        ${micBtn('wp-feedback', 'wp-adjust')}
+        <button class="btn small ghost" data-action="wp-regen" ${wp.loading ? 'disabled' : ''}>${SVG_REFRESH} 重新生成</button>
+      </div></div>` : `<div class="btn-row mt12"><button class="btn small ghost" data-action="copy-prompt" data-purpose="plan-week">复制上下文给 AI</button></div>`}`;
   }
 
-  // step 3
-  const goals = activeGoals();
-  const total = goals.reduce((sum, g) => sum + (Number(w.budgets[g.id]) || 0), 0);
-  return `<h2>每周规划 · 时间预算</h2><div class="modal-sub">先付给重要不紧急的事——给每个目标预留本周小时数</div>${stepsBar}
-  ${goals.map((g) => `<div class="goal-bar-row">
-    <div class="goal-bar-name" style="flex-basis:180px"><span class="dot" style="background:${goalColor(g)};width:8px;height:8px;border-radius:50%"></span><span>${esc(g.title)}</span></div>
-    <input type="number" min="0" step="0.5" value="${w.budgets[g.id] ?? ''}" data-change="wiz-budget" data-goal="${g.id}" style="width:80px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card-2)"> <span class="muted small">小时</span>
-  </div>`).join('')}
-  <div class="kv mt12"><span class="k">本周为目标预留合计</span><span class="v"><b>${total}</b> 小时</span></div>
+  return `<h2>每周规划</h2><div class="modal-sub">${weekLabel(thisWeekKey())} · ${statBits}</div>
+  ${wp.error ? `<div class="ai-error">${esc(wp.error)}</div>` : ''}
+  ${body}
   <div class="modal-actions">
-    <button class="btn ghost left" data-action="wiz-back">上一步</button>
-    <button class="btn primary" data-action="wiz-finish">完成规划</button>
+    <button class="btn ghost" data-action="modal-close">取消</button>
+    <button class="btn primary" data-action="wp-adopt" ${wp.loading || !wp.prios.some((p) => p.on) ? 'disabled' : ''}>就这么定</button>
   </div>`;
+}
+
+// 当前草案的文字版：迭代调整时发给模型（已定的不动，没提到的原样保留）
+function wpPriorText() {
+  const goals = activeGoals();
+  return [
+    ...wp.prios.map((p) => `${p.fixed ? '已定（不要动）' : p.on ? '草案' : '已被用户去掉'}：${p.title}${p.goalId && goalById(p.goalId) ? `（${goalById(p.goalId).title}）` : ''}${p.reason ? `：${p.reason}` : ''}`),
+    `预算：${goals.map((g) => `${g.title} ${wp.budgets[g.id] || 0}h`).join('；')}`,
+    wp.summary ? `上周复盘草稿：${wp.summary}` : null,
+    wp.rationale ? `草案思路：${wp.rationale}` : null,
+  ].filter(Boolean).join('\n');
+}
+
+// 一次调用出整周（要事+预算+上周摘要）；usePrior=true 时带草案做最小调整
+function wpRun(usePrior) {
+  return withAI(wp, refreshModal, async () => {
+    // 只要屏上已有条目（哪怕是首跑时的已定项），就把草案发给模型，避免它重复提议
+    const prior = usePrior || wp.prios.length ? wpPriorText() : null;
+    const plan = await aiPlanWeek(usePrior ? (wp.feedback || '') : '', prior);
+    const fixed = wp.prios.filter((p) => p.fixed && p.on);
+    const fresh = plan.priorities.filter((p) => !fixed.some((f) => f.title === p.title)).map((p) => ({ ...p, on: true }));
+    wp.prios = [...fixed, ...fresh];
+    for (const b of plan.budgets) wp.budgets[b.goalId] = b.hours;
+    if (plan.lastWeekSummary && !wp.summaryTouched) wp.summary = plan.lastWeekSummary;
+    wp.rationale = plan.rationale || '';
+    wp.feedback = '';
+  });
 }
 
 // ----- week review (standalone) -----
@@ -1438,92 +1491,58 @@ export const Actions = {
     toast('已加到今天'); render();
   },
 
-  // --- wizard ---
-  'wiz-open': () => {
-    const lastWk = shiftWeek(thisWeekKey(), -1);
-    const existing = state.weeks[thisWeekKey()];
-    wiz = {
-      step: 1, lastWk,
-      summary: state.weeks[lastWk]?.review?.summary || '',
-      sumLoading: false, sumError: null,
-      chosen: existing?.priorities?.map((p) => ({ title: p.title, goalId: p.goalId })) || [],
-      suggestions: [], sugSource: 'local', sugLoading: false, sugError: null,
-      budgets: { ...(existing?.budgets || {}) },
-      rationale: '', feedback: '',
-    };
-    if (!Object.keys(wiz.budgets).length) {
-      for (const g of activeGoals()) if (g.weeklyBudgetHours) wiz.budgets[g.id] = g.weeklyBudgetHours;
-    }
-    // 本地候选先自动铺上（零成本、即刻可挑）；AI 建议进第 2 步时自动开始细化
-    wiz.suggestions = localWeekSuggestions(wiz.chosen);
-    // 上周没数据会直接跳到第 2 步：此时立刻让 AI 从目标分解本周要事
+  // --- 每周规划（一屏） ---
+  'wp-open': () => {
+    const wk = thisWeekKey();
+    const lastWk = shiftWeek(wk, -1);
     const lastSt = weekStats(lastWk);
-    const hasLast = lastSt.tasksTotal > 0 || state.weeks[lastWk]?.plannedAt;
-    openModal(wizardModal);
-    if (!hasLast && hasKey()) Actions['wiz-ai-suggest']();
-  },
-  'wiz-back': () => { wiz.step = Math.max(1, wiz.step - 1); refreshModal(); },
-  'wiz-next': () => {
-    if (wiz.step === 1 && wiz.summary.trim()) {
-      update(() => { ensureWeek(wiz.lastWk).review = { summary: wiz.summary.trim(), reviewedAt: Date.now() }; });
+    const existing = state.weeks[wk];
+    wp = {
+      loading: false, error: null, rationale: '', feedback: '',
+      hasLastData: lastSt.tasksTotal > 0 || !!state.weeks[lastWk]?.plannedAt,
+      prios: (existing?.priorities || []).map((p) => ({ title: p.title, goalId: p.goalId, on: true, fixed: true })),
+      budgets: {},
+      summary: state.weeks[lastWk]?.review?.summary || '',
+      summaryTouched: !!state.weeks[lastWk]?.review?.summary,
+    };
+    for (const g of activeGoals()) {
+      const h = existing?.budgets?.[g.id] ?? g.weeklyBudgetHours;
+      if (h) wp.budgets[g.id] = h;
     }
-    wiz.step = Math.min(3, wiz.step + 1); refreshModal();
-    // 进入第 2 步时自动分解（本地候选已铺好，AI 到了就细化；出过错就等用户手动点，不空转）
-    if (wiz.step === 2 && hasKey() && wiz.sugSource !== 'ai' && !wiz.sugLoading && !wiz.sugError) Actions['wiz-ai-suggest']();
+    // 没有 Key 也不空白：本地候选直接当草案（不勾选，用户自己挑）
+    if (!hasKey()) for (const s of localWeekSuggestions(wp.prios)) wp.prios.push({ ...s, on: false });
+    openModal(weekPlanModal);
+    if (hasKey()) wpRun(false);
   },
-  'wiz-ai-summary': () => withAI({ set loading(v) { wiz.sumLoading = v; }, set error(v) { wiz.sumError = v; } }, refreshModal, async () => {
-    wiz.summary = (await aiWeekSummary(weekContextFor(wiz.lastWk))).trim();
-  }),
-  'wiz-ai-suggest': () => withAI({ set loading(v) { wiz.sugLoading = v; }, set error(v) { wiz.sugError = v; } }, refreshModal, async () => {
-    const plan = await aiPlanWeek(wiz.feedback || '');
-    wiz.suggestions = plan.priorities.filter((p) => !wiz.chosen.some((c) => c.title === p.title));
-    wiz.sugSource = 'ai';
-    wiz.rationale = plan.rationale;
-    wiz.feedback = '';
-  }),
-  // 带当前建议草案 + 用户的一段话 → 最小调整（已挑进本周的不动）
-  'wiz-ai-adjust': () => withAI({ set loading(v) { wiz.sugLoading = v; }, set error(v) { wiz.sugError = v; } }, refreshModal, async () => {
-    const prior = [
-      ...wiz.chosen.map((c) => `已选定（不要改动）：${c.title}`),
-      ...(wiz.suggestions || []).map((s) => `- ${s.title}${s.goalId && goalById(s.goalId) ? `（${goalById(s.goalId).title}）` : ''}${s.reason ? `：${s.reason}` : ''}`),
-      wiz.rationale ? `草案思路：${wiz.rationale}` : null,
-    ].filter(Boolean).join('\n');
-    const plan = await aiPlanWeek(wiz.feedback || '', prior);
-    wiz.suggestions = plan.priorities;
-    wiz.rationale = plan.rationale;
-    wiz.feedback = '';
-  }),
-  'wiz-pick': (el) => {
-    const sg = wiz.suggestions[Number(el.dataset.idx)];
-    if (!sg) return;
-    if (wiz.chosen.length >= 5) { toast('最多 5 件——聚焦'); return; }
-    wiz.chosen.push({ title: sg.title, goalId: sg.goalId });
-    wiz.suggestions.splice(Number(el.dataset.idx), 1);
-    refreshModal();
+  'wp-adjust': () => {
+    if (!wp.feedback.trim()) { toast('先说想怎么调（或打几个字）'); return; }
+    return wpRun(true);
   },
-  'wiz-unpick': (el) => { wiz.chosen.splice(Number(el.dataset.idx), 1); refreshModal(); },
-  'wiz-manual-add': (el) => {
+  'wp-regen': () => { wp.rationale = ''; return wpRun(false); },
+  'wp-manual': (el) => {
     const v = el.value.trim();
     if (!v) return;
-    if (wiz.chosen.length >= 5) { toast('最多 5 件——聚焦'); return; }
-    wiz.chosen.push({ title: v, goalId: null });
+    wp.prios.push({ title: v, goalId: null, on: true });
     el.value = ''; refreshModal();
   },
-  'wiz-finish': () => {
+  'wp-adopt': () => {
     update(() => {
       const wk = ensureWeek(thisWeekKey());
       const old = wk.priorities || [];
-      wk.priorities = wiz.chosen.map((c) => {
-        const prev = old.find((p) => p.title === c.title);
-        return { id: prev?.id || uid(), title: c.title, goalId: c.goalId, done: prev?.done || false };
+      wk.priorities = wp.prios.filter((p) => p.on).map((c) => {
+        const prev = old.find((x) => x.title === c.title);
+        return { id: prev?.id || uid(), title: c.title, goalId: c.goalId ?? null, done: prev?.done || false };
       });
       const budgets = {};
-      for (const [gid, v] of Object.entries(wiz.budgets)) if (Number(v) > 0) budgets[gid] = Number(v);
+      for (const [gid, v] of Object.entries(wp.budgets)) if (Number(v) > 0) budgets[gid] = Number(v);
       wk.budgets = budgets;
       wk.plannedAt = Date.now();
+      if (wp.hasLastData && wp.summary.trim()) {
+        ensureWeek(shiftWeek(thisWeekKey(), -1)).review = { summary: wp.summary.trim(), reviewedAt: Date.now() };
+      }
     });
     closeModal(); curWeek = thisWeekKey(); currentView = 'week'; render();
-    toast('本周计划完成');
+    toast('本周安排好了');
   },
 
   // --- week review ---
@@ -1589,6 +1608,8 @@ export const Actions = {
       if (g.firstActions?.length) d.ai.firstActions = g.firstActions;
     });
   },
+  'gf-manual-toggle': () => { goalDraft.manualOpen = !goalDraft.manualOpen; refreshModal(); },
+  'sync-now': () => syncNow().then(() => refreshModal()),
   'gf-save': () => {
     const d = goalDraft;
     if (!d.title.trim()) { toast('目标不能为空'); return; }
@@ -1671,6 +1692,7 @@ export const Actions = {
 
 export const Changes = {
   'set-api-key': (el) => update((s) => { s.settings.apiKey = el.value.trim(); }),
+  'set-ghtoken': (el) => { update((s) => { s.settings.ghToken = el.value.trim(); }); onTokenChange(); refreshModal(); },
   'set-model': (el) => {
     if (el.value === '__custom') { update((s) => { s.settings.model = ''; }); refreshModal(); }
     else update((s) => { s.settings.model = el.value; });
@@ -1684,7 +1706,7 @@ export const Changes = {
   'set-reflection': (el) => update(() => { ensureDay(el.dataset.day).reflection = el.value; }),
   'plan-feedback': (el) => { planState.feedback = el.value; },
   'plan-check': (el) => { planState.checked[el.dataset.key] = el.checked; },
-  'wiz-feedback': (el) => { wiz.feedback = el.value; },
+  'wp-feedback': (el) => { wp.feedback = el.value; },
   'task-title': (el) => mutTask((t) => { t.title = el.value.trim() || t.title; }),
   'task-goal': (el) => mutTask((t) => { t.goalId = el.value || null; }),
   'task-block': (el) => mutTask((t) => { t.blockStart = el.value || null; }),
@@ -1697,8 +1719,9 @@ export const Changes = {
   'gf-horizon': (el) => { goalDraft.horizon = el.value; },
   'gf-budget': (el) => { goalDraft.weeklyBudgetHours = Number(el.value) || 0; },
   'gf-ms': (el) => { goalDraft.milestonesText = el.value; },
-  'wiz-summary': (el) => { wiz.summary = el.value; },
-  'wiz-budget': (el) => { wiz.budgets[el.dataset.goal] = el.value; },
+  'wp-summary': (el) => { wp.summary = el.value; wp.summaryTouched = true; },
+  'wp-budget': (el) => { wp.budgets[el.dataset.goal] = el.value; refreshModal(); },
+  'wp-toggle': (el) => { wp.prios[Number(el.dataset.idx)].on = el.checked; refreshModal(); },
   'wr-text': (el) => { wr.text = el.value; },
   'month-sum': (el) => update((s) => {
     s.months[el.dataset.mk] = { review: { summary: el.value.trim(), reviewedAt: Date.now() } };

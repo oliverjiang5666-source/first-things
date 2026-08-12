@@ -19,7 +19,8 @@ export function defaultState() {
     days: {},    // "2026-08-11" -> { tasks:[...], reflection, aiComment, plannedAt, reviewedAt }
     months: {},  // "2026-08" -> { review:{summary,reviewedAt} }
     inbox: [],   // [{id,title,createdAt}]
-    settings: { apiKey: '', model: 'openai/gpt-5.6-sol', effort: 'max', theme: 'auto', lastExportAt: null, autoAI: true },
+    settings: { apiKey: '', model: 'openai/gpt-5.6-sol', effort: 'max', theme: 'auto', lastExportAt: null, autoAI: true, ghToken: '', ghRepo: '' },
+    syncStamp: 0, // 每次本地修改都盖新戳；云同步用它判断谁新（新者胜）
     // 后台智能的工作区：观察卡 + 自动洞察的节流记录
     assistant: { brief: null, briefHash: '', briefDate: '', briefCount: 0, insightAutoAt: 0 },
     timer: null, // {day, taskId, startedAt} —— 全局同时只有一个任务在计时
@@ -51,6 +52,7 @@ function migrate(s) {
   s.months = s.months || {}; s.inbox = s.inbox || [];
   s.assistant = { ...d.assistant, ...(s.assistant || {}) };
   s.timer = s.timer || null;
+  s.syncStamp = s.syncStamp || 0;
   for (const g of s.goals) { g.milestones = g.milestones || []; }
   return s;
 }
@@ -64,6 +66,14 @@ let listeners = [];
 export function subscribe(fn) { listeners.push(fn); }
 export function update(fn) {
   if (fn) fn(state);
+  state.syncStamp = Date.now();
+  save();
+  listeners.forEach((l) => l());
+}
+
+// 整包替换本地状态（云端较新时采用远端）：不盖新戳，避免采纳完又把自己当成「更新」推回去
+export function replaceState(s) {
+  state = migrate(s);
   save();
   listeners.forEach((l) => l());
 }
@@ -410,7 +420,7 @@ function addMinutes(hhmm, delta) {
 // ---------- export / import ----------
 
 export function exportJSON() {
-  const safe = { ...state, settings: { ...state.settings, apiKey: '' } }; // 备份文件不含 API key
+  const safe = { ...state, settings: { ...state.settings, apiKey: '', ghToken: '' } }; // 备份文件不含任何密钥
   const blob = new Blob([JSON.stringify(safe, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -426,9 +436,11 @@ export function importJSON(text) {
   if (!parsed || typeof parsed !== 'object' || !parsed.version || !parsed.days) {
     throw new Error('文件格式不对：这不是「要事」的备份文件');
   }
-  const apiKey = state.settings.apiKey; // keep local key when restoring on a new device
+  const { apiKey, ghToken, ghRepo } = state.settings; // keep local secrets when restoring on a new device
   state = migrate(parsed);
   if (!state.settings.apiKey) state.settings.apiKey = apiKey;
+  if (!state.settings.ghToken) state.settings.ghToken = ghToken;
+  if (!state.settings.ghRepo) state.settings.ghRepo = ghRepo;
   update();
 }
 

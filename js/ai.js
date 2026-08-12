@@ -235,6 +235,10 @@ export async function aiPlanWeek(input = '', prior = null) {
   });
   const plan = parseStructured(text);
   plan.priorities = (plan.priorities || []).slice(0, 5).map((p) => ({ ...p, goalId: validateGoalId(p.goalId) }));
+  plan.budgets = (plan.budgets || [])
+    .map((b) => ({ goalId: validateGoalId(b.goalId), hours: Number(b.hours) || 0 }))
+    .filter((b) => b.goalId && b.hours > 0);
+  plan.lastWeekSummary = (plan.lastWeekSummary || '').trim();
   return plan;
 }
 

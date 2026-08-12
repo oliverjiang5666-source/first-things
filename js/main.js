@@ -3,6 +3,7 @@
 import { state, update, subscribe, todayKey } from './store.js';
 import { render, Actions, Changes, applyTheme, toast } from './ui.js';
 import { init as initAuto } from './auto.js';
+import { initSync, schedulePush } from './sync.js';
 
 // 本地配置注入：js/config.local.js 在 .gitignore 里，不会进仓库。
 // 在自己电脑上把 API key 写进该文件，就不用每个浏览器手动填一遍；
@@ -17,15 +18,18 @@ try {
   }
 } catch { /* 没有本地配置文件——正常 */ }
 
-// 带钥匙的快捷方式：网址 #k=<OpenRouter Key>，打开一次自动写入本机并清掉地址栏。
-// 公开仓库不能放密钥（会被扫描盗用、自动作废），所以钥匙只活在用户桌面的
-// 快捷方式文件里；# 后面的部分浏览器不会发给任何服务器。
+// 带钥匙的快捷方式：网址 #k=<OpenRouter Key>&gt=<GitHub 令牌>，打开一次自动写入
+// 本机并清掉地址栏。公开仓库不能放密钥（会被扫描盗用、自动作废），所以钥匙只活在
+// 用户桌面的快捷方式文件里；# 后面的部分浏览器不会发给任何服务器。
 try {
-  const hk = new URLSearchParams(location.hash.slice(1)).get('k');
-  if (hk && hk.startsWith('sk-')) {
-    if (state.settings.apiKey !== hk) update((s) => { s.settings.apiKey = hk; });
-    history.replaceState(null, '', location.pathname + location.search);
-  }
+  const hp = new URLSearchParams(location.hash.slice(1));
+  const hk = hp.get('k');
+  const gt = hp.get('gt');
+  const wrote = [];
+  if (hk && hk.startsWith('sk-') && state.settings.apiKey !== hk) wrote.push((s) => { s.settings.apiKey = hk; });
+  if (gt && /^(github_pat_|ghp_)/.test(gt) && state.settings.ghToken !== gt) wrote.push((s) => { s.settings.ghToken = gt; });
+  if (wrote.length) update((s) => wrote.forEach((w) => w(s)));
+  if (hk || gt) history.replaceState(null, '', location.pathname + location.search);
 } catch { /* hash 解析失败就当没有 */ }
 
 applyTheme();
@@ -84,6 +88,10 @@ setInterval(checkDayChange, 60_000);
 // 后台智能（auto.js 不 import ui，提示统一走这个事件）
 document.addEventListener('yaoshi-toast', (e) => toast(e.detail));
 initAuto();
+
+// 云同步：启动拉一次，本地每次修改防抖推送（sync.js 内部自判有没有配令牌）
+initSync();
+subscribe(schedulePush);
 
 // 计时进行中：每 30 秒重绘一次，让「已 N 分钟」走起来
 setInterval(() => {
