@@ -1,4 +1,4 @@
-const CACHE = 'yaoshi-v1.0.0';
+const CACHE = 'yaoshi-v1.0.1';
 const ASSETS = [
   './', './index.html', './styles.css', './manifest.webmanifest', './icon.svg',
   './js/main.js', './js/ui.js', './js/store.js', './js/context.js', './js/ai.js', './js/charts.js',

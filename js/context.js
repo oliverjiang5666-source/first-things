@@ -6,7 +6,7 @@ import {
   state, activeGoals, goalById, currentMilestone, quadrantOf, taskMinutes,
   todayKey, addDays, fmtDay, fmtShort, weekLabel, weekDays, thisWeekKey, shiftWeek,
   dayStats, weekStats, weekGoalMinutes, unfinishedYesterday, fmtMonth, QUAD_LABEL,
-  computeSignals,
+  computeSignals, nowBeijing,
 } from './store.js';
 
 const BUDGET_CHARS = 9000;
@@ -14,9 +14,9 @@ const BUDGET_CHARS = 9000;
 const hours = (min) => (min / 60).toFixed(1).replace(/\.0$/, '');
 
 function nowLine() {
-  const d = new Date();
+  const d = nowBeijing();
   const pad = (n) => String(n).padStart(2, '0');
-  return `【当前时间】${todayKey()} ${fmtDay(todayKey())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `【当前时间】${todayKey()} ${fmtDay(todayKey())} ${pad(d.getHours())}:${pad(d.getMinutes())}（北京时间，所有日期与时间块均以此为准）`;
 }
 
 function profileSection() {

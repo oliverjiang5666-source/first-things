@@ -67,11 +67,21 @@ export function uid() {
   return (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
 }
 
-// ---------- dates (all local-time; toISOString would shift the day in non-UTC zones) ----------
+// ---------- dates ----------
+// 「现在」一律按北京时间（UTC+8）判定：用户在不同时区的多台电脑上使用时，
+// 「今天 / 本周」在所有设备上保持一致（历史 dateKey 只是日历标签，不受影响）。
+
+const BEIJING_OFFSET_MIN = 8 * 60;
+export function beijingDateOf(ts) {
+  const d = new Date(ts);
+  // 平移后，用本地字段读取即得到北京墙上时间
+  return new Date(d.getTime() + (d.getTimezoneOffset() + BEIJING_OFFSET_MIN) * 60000);
+}
+export function nowBeijing() { return beijingDateOf(Date.now()); }
 
 const pad = (n) => String(n).padStart(2, '0');
 
-export function dateKey(d = new Date()) {
+export function dateKey(d = nowBeijing()) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 export function parseKey(k) {
@@ -81,7 +91,7 @@ export function parseKey(k) {
 export function addDays(k, n) {
   const d = parseKey(k); d.setDate(d.getDate() + n); return dateKey(d);
 }
-export function todayKey() { return dateKey(new Date()); }
+export function todayKey() { return dateKey(nowBeijing()); }
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 export function fmtDay(k, withWeekday = true) {
@@ -106,11 +116,11 @@ function isoWeekParts(date) {
   const week = 1 + Math.round((d - week1Thu) / (7 * 86400000));
   return { year: isoYear, week };
 }
-export function weekKeyOf(d = new Date()) {
+export function weekKeyOf(d = nowBeijing()) {
   const { year, week } = isoWeekParts(d);
   return `${year}-W${pad(week)}`;
 }
-export function thisWeekKey() { return weekKeyOf(new Date()); }
+export function thisWeekKey() { return weekKeyOf(nowBeijing()); }
 
 export function weekStart(weekKey) {
   const [y, w] = weekKey.split('-W').map(Number);
@@ -325,7 +335,7 @@ export function computeSignals() {
   }
 
   // 6. 本周还没规划（周二及以后）
-  const dow = (new Date().getDay() + 6) % 7; // Mon=0
+  const dow = (nowBeijing().getDay() + 6) % 7; // Mon=0，按北京时间
   if (dow >= 1 && !state.weeks[twk]?.plannedAt && hasAnyData()) {
     signals.push({ level: 'info', key: 'no-week-plan', text: '本周还没有做每周规划——10 分钟就够' });
   }

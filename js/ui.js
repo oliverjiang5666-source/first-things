@@ -6,7 +6,7 @@ import {
   todayKey, addDays, fmtDay, fmtShort, weekLabel, weekDays, thisWeekKey, shiftWeek, weekStart,
   dayStats, weekStats, weekGoalMinutes, reviewStreak, unfinishedYesterday, hasAnyData,
   computeSignals, monthKeyOf, fmtMonth, exportJSON, importJSON, wipeAll, seedDemo,
-  AREAS, HORIZONS, dateKey,
+  AREAS, HORIZONS, dateKey, beijingDateOf,
 } from './store.js';
 import {
   hasKey, MODELS, EFFORTS, aiPlanDay, planDayPrompt, aiPlanWeek, planWeekPrompt,
@@ -496,7 +496,7 @@ function insightCard() {
     if (i.experiment) {
       body += `<div class="ins-sec"><div class="ins-h">下周实验</div><div class="ins-item"><b>${esc(i.experiment.title)}</b><div class="small" style="color:var(--ink-2)">${esc(i.experiment.how)}</div></div></div>`;
     }
-    body += `<div class="muted small mt8">生成于 ${new Date(ins.insight.createdAt).toLocaleDateString('zh-CN')} · ${weekLabel(ins.week)}</div>`;
+    body += `<div class="muted small mt8">生成于 ${fmtDay(dateKey(beijingDateOf(ins.insight.createdAt)), false)} · ${weekLabel(ins.week)}</div>`;
   } else {
     body += `<div class="small" style="color:var(--ink-2)">让 AI 基于你的全部数据做一次第一性原理分析：行为模式 → 最大瓶颈 → 杠杆点 → 下周实验。建议每周做一次。</div>`;
   }
@@ -597,7 +597,7 @@ function settingsModal() {
     <button class="btn small" data-action="demo-load">加载示例数据</button>
     <button class="btn small danger" data-action="wipe-data">清空所有数据</button>
   </div>
-  <div class="muted small mt12">要事 First Things v1 · 数据存储在本机浏览器 · <a href="https://github.com/oliverjiang5666-source/first-things" target="_blank" rel="noreferrer">GitHub</a></div>
+  <div class="muted small mt12">要事 First Things v1 · 数据存储在本机浏览器 · 「今天」按北京时间（UTC+8）判定 · <a href="https://github.com/oliverjiang5666-source/first-things" target="_blank" rel="noreferrer">GitHub</a></div>
   <div class="modal-actions"><button class="btn" data-action="modal-close">完成</button></div>`;
 }
 
